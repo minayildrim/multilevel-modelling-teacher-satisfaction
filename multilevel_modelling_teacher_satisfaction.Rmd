@@ -1,0 +1,3192 @@
+---
+title: "Multilevel Modelling Teacher-School"
+author: "Mina Nur Yıldırım"
+date: "2025-12-16"
+output:
+  pdf_document:
+    latex_engine: xelatex
+---
+
+
+The original one
+
+# Session 1: Exposure to Datasets
+
+```{r,results='markup'}
+library(haven)
+library(dplyr)
+library(lme4)
+library(lmerTest)
+
+# NOTE: update this path to the local location of the PISA 2022 .rdata files
+# before knitting. Using a hardcoded absolute path keeps this script from
+# being reproducible on another machine; consider using a relative path
+# (e.g. via an RStudio project + here::here()) for the final submission.
+folder <- "/Users/minayildirim/Library/Mobile Documents/com~apple~CloudDocs/Tubingen/lessons/2nd semester/Multilevel Modelling"
+
+tch_path <- file.path(folder, "CY08MSP_TCH_QQQ.rdata")
+stu_path <- file.path(folder, "CY08MSP_STU_QQQ.rdata")
+sch_path <- file.path(folder, "CY08MSP_SCH_QQQ.rdata")
+
+# Teacher data
+con_tch <- gzfile(tch_path, "rb")
+tch <- readRDS(con_tch)
+close(con_tch)
+
+# Student data
+con_stu <- gzfile(stu_path, "rb")
+stu <- readRDS(con_stu)
+close(con_stu)
+
+# School data
+con_sch <- gzfile(sch_path, "rb")
+sch <- readRDS(con_sch)
+close(con_sch)
+
+names(tch)
+names(stu)
+names(sch)
+
+head(tch)
+head(stu)
+head(sch)
+
+dim(tch)
+dim(stu)
+dim(sch)
+
+str(tch)
+str(stu)
+str(sch)
+
+colSums(is.na(tch))
+colSums(is.na(stu))
+colSums(is.na(sch))
+
+summary(tch)
+summary(stu)
+summary(sch)
+
+tch %>%
+  group_by(CNTSCHID) %>%
+  summarise(n_teachers = n()) %>%
+  summary()
+
+```
+
+The number of teachers per school ranged from 1 to 25, with an average of 14.41 teachers per school (Median = 15.5). This indicates a hierarchical data structure where teachers are nested within schools.
+
+
+# Session 2–5: Formulation of Research Questions, Selection of Variables, and Literature Research
+
+In this study, a two-level hierarchical structure is employed, in which teachers (Level 1) are nested within schools (Level 2). A subset of variables from the PISA 2022 Teacher and School Questionnaires is selected to investigate how individual teacher characteristics and school-level factors are associated with teacher outcomes. The analysis sample is restricted to teachers with valid observations on the variables included in the respective models.
+
+The main dependent variable is teachers' overall job satisfaction (TC258Q01JA), measured on a 0–10 scale, where higher values indicate greater job satisfaction. The extension analysis uses a binary dependent variable based on whether teachers have seriously considered leaving classroom teaching (TC250Q01JA).
+
+A total of seven predictors are included and used consistently across both models. At the individual level (Level 1), the predictors include teacher age (TC002Q01NA), total teaching experience (TC007Q02NA), weekly working hours (TC215Q01JA), use of ICT in teaching (TC169Q11HA), and perceived work-related stress (TC254Q01JA). Age, teaching experience, and weekly working hours are numerical variables, whereas ICT use and perceived work-related stress are measured on ordinal response scales. These variables are obtained from the Teacher Questionnaire and vary across teachers within schools.
+
+At the school level (Level 2), the predictors include lack of respect for teachers among students (SC061Q03TA), measured as the extent to which students' lack of respect for teachers is perceived to hinder learning in the school, and the proportion of students from socioeconomically disadvantaged homes (SC211Q03JA). The latter is measured as a percentage. These variables are obtained from the School Questionnaire and are constant for all teachers within the same school.
+
+Multilevel models with random intercepts are estimated to account for the clustering of teachers within schools. In addition, random-slope models for perceived work-related stress are tested to examine whether the association between stress and job satisfaction varies across schools. The ordinal predictor variables are treated as numerical covariates in the models.
+
+## Introducing Variables and Descriptive Analysis
+
+
+```{r,results='markup'}
+
+# Check possible ID variables
+names(tch)[grepl("TCH|TEACH|ID", names(tch), ignore.case = TRUE)]
+
+# Create a unique row ID for each teacher, then merge teacher and school data
+data <- tch %>%
+  mutate(teacher_id = row_number()) %>%
+  left_join(sch, by = "CNTSCHID")
+
+# Select variables, rename them, and remove missing values
+data_model <- data %>%
+  transmute(
+    school_id = CNTSCHID,
+    teacher_id = teacher_id,
+    original_teacher_id = CNTTCHID,
+    
+    # Dependent variables
+    satisfaction = TC258Q01JA,
+    leave = case_when(
+      TC250Q01JA == 1 ~ 1,
+      TC250Q01JA == 2 ~ 0,
+      TRUE ~ NA_real_
+    ),
+    
+    # Level 1 predictors
+    age = TC002Q01NA,
+    experience = TC007Q02NA,
+    working_hours = TC215Q01JA,
+    ict_use = TC169Q11HA,
+    stress = TC254Q01JA,
+    
+    # Level 2 predictors from school questionnaire
+    lack_of_respect = SC061Q03TA,
+    ses_disadvantage = SC211Q03JA
+  ) %>%
+  na.omit()
+
+# Check raw data
+summary(data_model)
+dim(data_model)
+length(unique(data_model$school_id))
+
+# Show teachers with highest working hours
+data_model %>%
+  arrange(desc(working_hours)) %>%
+  dplyr::select(teacher_id, original_teacher_id, school_id, working_hours) %>%
+  head(30)
+
+summary(data_model)
+
+nrow(data)
+nrow(data_model)
+nrow(data) - nrow(data_model)
+# Complete-case exclusion count (printed above); the prose below
+# references this dynamically via inline `r` code so it can never
+# drift out of sync with the actual computed value again.
+
+```
+
+## Descriptive Statistics and Data Preparation
+
+
+The analytical dataset was constructed by merging the PISA 2022 Teacher
+and School Questionnaires using the school identifier. The analysis was
+restricted to observations with complete information on the variables
+included in the models. The resulting dataset contained `r nrow(data_model)` teachers
+nested within `r length(unique(data_model$school_id))` schools before the additional screening of weekly
+working hours. The complete-case procedure excluded `r nrow(data) - nrow(data_model)` observations due
+to missing information.
+
+The main continuous outcome was teacher job satisfaction (TC258Q01JA), 
+which is measured on a 0-10 scale, with higher values indicating greater 
+job satisfaction. The binary extension outcome was constructed from 
+TC250Q01JA, where a value of 1 indicates that the teacher had seriously 
+considered leaving classroom teaching and a value of 0 indicates that the 
+teacher had not.
+
+The teacher-level predictors were age, teaching experience, weekly 
+working hours, ICT use, and perceived work-related stress. The school-level 
+predictors were lack of respect for teachers among students and the 
+proportion of students from socioeconomically disadvantaged homes. These 
+variables correspond to the teacher- and school-level variables specified 
+in the research design. 
+
+Weekly working hours required additional data screening. The initial 
+distribution contained implausibly large values, including a reported 
+value of 3,600 hours per week. To identify extreme observations 
+systematically, an IQR-based rule was applied. Observations below 
+12.5 hours or above 72.5 hours per week were classified as outliers and 
+excluded from the analysis. After this procedure, weekly working hours 
+ranged from 13 to 72 hours per week. This screening step was performed 
+before fitting the multilevel models in order to reduce the influence of 
+implausible observations on the estimated coefficients. 
+
+
+```{r,results='markup'}
+
+# IQR-based outlier thresholds for working hours
+Q1 <- quantile(data_model$working_hours, 0.25)
+Q3 <- quantile(data_model$working_hours, 0.75)
+IQR_val <- Q3 - Q1
+
+lower_bound <- Q1 - 1.5 * IQR_val
+upper_bound <- Q3 + 1.5 * IQR_val
+
+# Before cleaning plots
+hist(data_model$working_hours,
+     breaks = 50,
+     main = "Before Cleaning: Histogram",
+     xlab = "Working Hours",
+     col = "lightblue")
+
+boxplot(data_model$working_hours,
+        main = "Before Cleaning: Boxplot",
+        col = "lightblue")
+
+# Remove outliers
+data_model_clean <- data_model %>%
+  filter(working_hours >= lower_bound,
+         working_hours <= upper_bound)
+
+lower_bound
+upper_bound
+
+# After cleaning plots
+hist(data_model_clean$working_hours,
+     breaks = 30,
+     main = "After Cleaning: Histogram",
+     xlab = "Working Hours",
+     col = "lightgreen")
+
+boxplot(data_model_clean$working_hours,
+        main = "After Cleaning: Boxplot",
+        col = "lightgreen")
+
+summary(data_model_clean$working_hours)
+
+```
+
+The IQR-based outlier detection procedure identified several extreme observations for weekly working hours. In particular, values such as 3,600 hours per week were clearly implausible and likely resulted from reporting or coding errors. Outliers were defined as observations falling below 12.5 hours or above 72.5 hours per week (Q1 − 1.5 × IQR and Q3 + 1.5 × IQR, respectively). After excluding these observations, the distribution of working hours became more symmetric and concentrated around its central tendency, with values ranging from 13 to 72 hours per week. This cleaning procedure improved the plausibility of the variable and reduced the potential influence of extreme observations on the estimation of the multilevel models.
+
+
+```{r,results='markup'}
+
+data_model_clean <- data_model_clean %>%
+  mutate(
+    age_z = as.numeric(scale(age)),
+    experience_z = as.numeric(scale(experience)),
+    working_hours_z = as.numeric(scale(working_hours)),
+    ict_use_z = as.numeric(scale(ict_use)),
+    stress_z = as.numeric(scale(stress)),
+    lack_of_respect_z = as.numeric(scale(lack_of_respect)),
+    ses_disadvantage_z = as.numeric(scale(ses_disadvantage))
+  )
+
+summary(data_model_clean)
+ 
+```
+
+I standardized all continuous predictor variables (age, experience, working hours, ICT use, stress, lack of respect, and socioeconomic disadvantage) by transforming them into z-scores before fitting the multilevel model. Standardization was performed by subtracting the mean from each observation and dividing by the standard deviation of the respective variable, resulting in variables with a mean of approximately 0 and a standard deviation of 1. This procedure places all predictors on a common scale, allowing the regression coefficients to be directly compared in terms of their relative effects on teacher satisfaction. In addition, standardization helps improve numerical stability and reduces the risk of convergence problems during model estimation, particularly when predictors are measured on substantially different scales. After standardization, I converted the variables to numeric vectors to ensure compatibility with the mixed-effects modelling functions and to avoid potential issues caused by the matrix output generated by the scale() function.
+
+
+```{r, results='markup', fig.width=12, fig.height=8}
+
+par(mfrow = c(2, 4))
+
+# 1) School-level mean satisfaction
+school_means <- data_model_clean %>%
+  group_by(school_id) %>%
+  summarise(mean_satisfaction = mean(satisfaction, na.rm = TRUE))
+
+boxplot(school_means$mean_satisfaction,
+        main = "School-level mean satisfaction",
+        ylab = "Mean satisfaction")
+
+stripchart(school_means$mean_satisfaction,
+           vertical = TRUE,
+           method = "jitter",
+           pch = 16,
+           add = TRUE)
+
+abline(h = mean(school_means$mean_satisfaction), lty = 2)
+
+# 2) Age
+scatter.smooth(data_model_clean$age_z, data_model_clean$satisfaction,
+               main = "Age and job satisfaction",
+               xlab = "Age (z-score)",
+               ylab = "Job satisfaction")
+
+# 3) Experience
+scatter.smooth(data_model_clean$experience_z, data_model_clean$satisfaction,
+               main = "Experience and job satisfaction",
+               xlab = "Experience (z-score)",
+               ylab = "Job satisfaction")
+
+# 4) Working hours
+scatter.smooth(data_model_clean$working_hours_z, data_model_clean$satisfaction,
+               main = "Working hours and job satisfaction",
+               xlab = "Working hours (z-score)",
+               ylab = "Job satisfaction")
+
+# 5) ICT use
+boxplot(satisfaction ~ ict_use,
+        data = data_model_clean,
+        main = "Job satisfaction by ICT use",
+        xlab = "ICT use",
+        ylab = "Job satisfaction")
+
+# 6) Stress
+boxplot(satisfaction ~ stress,
+        data = data_model_clean,
+        main = "Job satisfaction by stress",
+        xlab = "Stress",
+        ylab = "Job satisfaction")
+
+# 7) Lack of respect
+boxplot(satisfaction ~ lack_of_respect,
+        data = data_model_clean,
+        main = "Job satisfaction by lack of respect",
+        xlab = "Lack of respect",
+        ylab = "Job satisfaction")
+
+# 8) SES disadvantage
+scatter.smooth(data_model_clean$ses_disadvantage_z,
+               data_model_clean$satisfaction,
+               main = "SES disadvantage and job satisfaction",
+               xlab = "SES disadvantage (z-score)",
+               ylab = "Job satisfaction")
+
+par(mfrow = c(1,1))
+
+```
+
+
+## Intraclass Correlation Coefficient (ICC)
+
+Prior to estimating the explanatory multilevel models, a null (empty) model was fitted to examine whether a meaningful proportion of variance in teacher job satisfaction was attributable to differences between schools. In order to estimate the ICC, the unconditional mean model is assumed:  
+$$ \text{satisfaction}_{ij} = \gamma_{00} + u_{0j} + \varepsilon_{ij} $$  
+In this model, the observed job satisfaction score ($\text{satisfaction}_{ij}$) for teacher $i$ in school $j$ is decomposed into specific structural components: 
+
+$\gamma_{00}$: The overall (grand) average teacher job satisfaction across all schools in the population. 
+
+$u_{0j}$: The school-specific random intercept, representing the deviation of school $j$'s average satisfaction from the grand mean ($\gamma_{00}$). It is assumed to be normally distributed, $u_{0j} \sim N(0, \sigma_{u_0}^2)$. 
+
+$\varepsilon_{ij}$: The teacher-level residual error, representing individual differences in job satisfaction among teachers within the same school, assumed to be normally distributed, $\varepsilon_{ij} \sim N(0, \sigma_\varepsilon^2)$.  The intraclass correlation coefficient (ICC) is then defined based on these variance components:  
+
+$$ \text{ICC} = \frac{\sigma_{u_0}^2}{\sigma_{u_0}^2 + \sigma_\varepsilon^2} $$  
+where $\sigma_{u_0}^2$ represents the between-school variance (quantifying how much schools differ from one another in average teacher satisfaction) and $\sigma_\varepsilon^2$ represents the within-school residual variance (quantifying individual variation among teachers within the same school).
+
+```{r,results='markup'}
+
+# ICC: empty random-intercept model
+# y_ij = gamma_00 + u_0j + e_ij
+
+mod0 <- lmer(
+  satisfaction ~ 1 + (1 | school_id),
+  data = data_model_clean,
+  REML = TRUE
+)
+
+# Variance components
+covrand <- as.data.frame(VarCorr(mod0))
+
+sigma_school <- covrand[covrand$grp == "school_id", "vcov"]
+sigma_resid  <- attr(VarCorr(mod0), "sc")^2
+
+sigma_school
+sigma_resid
+
+# ICC
+ICC_school <- sigma_school / (sigma_school + sigma_resid)
+
+ICC_school
+
+ICC_school*100 #percentage
+
+```
+
+Prior to estimating the explanatory multilevel models, a null (empty) model was fitted to examine whether a meaningful proportion of variance in teacher job satisfaction was attributable to differences between schools. The null model included only a fixed intercept and a random intercept for schools:
+
+$$
+y_{ij} = \gamma_{00} + u_{0j} + \varepsilon_{ij}
+$$
+
+where $y_{ij}$ denotes the job satisfaction score of teacher $i$ in school $j$, $\gamma_{00}$ is the overall mean job satisfaction, $u_{0j}$ is the school-specific random intercept, and $\varepsilon_{ij}$ is the teacher-level residual.
+
+
+The intraclass correlation coefficient (ICC) was calculated as
+
+$$
+ICC =
+\frac{\sigma^2_{u_0}}
+{\sigma^2_{u_0}+\sigma^2_{\varepsilon}},
+$$
+
+where $\sigma^2_{u_0}$ denotes the between-school variance and
+$\sigma^2_{\varepsilon}$ denotes the within-school residual variance.
+
+The estimated ICC was $0.0106$, indicating that approximately $1.06\%$
+of the total variance in teacher job satisfaction was attributable to
+differences between schools, while approximately $98.94\%$ was
+attributable to differences between teachers within schools. Thus, most
+of the variation in teacher job satisfaction occurred at the teacher
+level, with relatively little variation attributable to differences
+between schools.
+
+Despite the relatively small ICC, a multilevel modelling framework was
+retained because teachers are nested within schools, meaning that
+observations from the same school may not be statistically independent.
+Moreover, the analysis includes school-level predictors, which require
+the hierarchical structure to be explicitly represented in the model.
+The multilevel framework therefore accounts for the clustering of
+teachers within schools while allowing school-level characteristics to
+be included as predictors of teacher job satisfaction.
+
+
+## Model Specification
+
+### Level 1 Model (Teacher Level)
+
+$$
+satisfaction_{ij} = \beta_{0j} + \beta_{1j}\text{age\_z}_{ij} + \beta_{2j}\text{experience\_z}_{ij} + \beta_{3j}\text{working\_hours\_z}_{ij} + \beta_{4j}\text{ict\_use\_z}_{ij} + \beta_{5j}\text{stress\_z}_{ij} + \varepsilon_{ij}
+$$
+
+where 
+$$
+\varepsilon_{ij} \sim N(0, \sigma^2)
+$$
+
+### Level 2 Model (School Level)
+
+$$
+\beta_{0j} = \gamma_{00} + \gamma_{01}\text{lack\_of\_respect\_z}_{j} + \gamma_{02}\text{ses\_disadvantage\_z}_{j} + u_{0j}
+$$
+
+where
+$$
+u_{0j} \sim N(0, \sigma_{u_0}^2)
+$$
+
+In this starting specification the five teacher-level slopes are fixed
+(no random-slope terms yet), so each Level-1 coefficient is replaced by
+a single Level-2 parameter:
+
+$$
+\beta_{1j}=\gamma_{10},\quad
+\beta_{2j}=\gamma_{20},\quad
+\beta_{3j}=\gamma_{30},\quad
+\beta_{4j}=\gamma_{40},\quad
+\beta_{5j}=\gamma_{50}.
+$$
+
+Which of these slopes should instead be allowed to vary across schools
+(i.e. written as $\beta_{pj}=\gamma_{p0}+u_{pj}$) is exactly what the
+Random Slope Test below decides. Because every fixed effect in the
+combined model is a Level-2 parameter, all fixed-effect hypotheses in
+this report are stated in terms of $\gamma$ rather than $\beta$.
+
+### Combined Model
+
+$$
+satisfaction_{ij} = \gamma_{00} + \gamma_{10}\text{age\_z}_{ij} + \gamma_{20}\text{experience\_z}_{ij} + \gamma_{30}\text{working\_hours\_z}_{ij} + \gamma_{40}\text{ict\_use\_z}_{ij} + \gamma_{50}\text{stress\_z}_{ij} + \gamma_{01}\text{lack\_of\_respect\_z}_{j} + \gamma_{02}\text{ses\_disadvantage\_z}_{j} + u_{0j} + \varepsilon_{ij}
+$$
+
+
+
+### Fixed Effects
+
+This is the *saturated* starting specification, from which the modeling
+strategy described later (random effects tested first, then fixed
+effects by backward elimination) proceeds. It includes the following
+fixed effects:
+
+- Overall intercept ($\gamma_{00}$)
+- Teacher age ($\gamma_{10}$)
+- Teaching experience ($\gamma_{20}$)
+- Weekly working hours ($\gamma_{30}$)
+- ICT use ($\gamma_{40}$)
+- Stress ($\gamma_{50}$)
+- Lack of respect at the school level ($\gamma_{01}$)
+- Socioeconomic disadvantage at the school level ($\gamma_{02}$)
+
+Two of these ($\gamma_{30}$ and $\gamma_{02}$) are removed during the
+Stepwise Fixed-Effects Selection reported below; the final model
+therefore contains five fixed-effect predictors rather than seven.
+
+### Random Effects
+
+The model includes one random effect:
+
+- School-specific random intercept ($u_{0j}$), where $u_{0j} \sim N(0, \sigma_{u_0}^2)$
+
+### Residual Error
+
+The teacher-level residual error is:
+
+$$
+\varepsilon_{ij} \sim N(0, \sigma^2)
+$$
+
+which captures unexplained variation between teachers within the same school.
+
+## Random Effects Test
+
+
+```{r,results='markup'}
+
+# Random-intercept model (ML estimation, needed for the LRT below)
+# Note: this is a separate object from the REML-estimated mod0 used
+# above for the ICC, since LRTs on fixed/random effects require ML.
+mod0_ml <- lmer(
+  satisfaction ~ 1 + (1 | school_id),
+  data = data_model_clean,
+  REML = FALSE
+)
+
+# Single-level model without random intercept
+mod0a <- lm(
+  satisfaction ~ 1,
+  data = data_model_clean
+)
+
+# Likelihood-ratio test
+test0 <- anova(mod0_ml, mod0a, refit = FALSE)
+
+test0
+
+LL0 <- test0$Chisq[2]
+
+p_corrected <- 0.5 * pchisq(LL0, df = 1, lower.tail = FALSE)
+
+p_corrected
+
+VarCorr(mod0_ml)
+```
+
+### Random Effects Test: Results
+
+To determine whether a school-level random intercept was required, a likelihood ratio test (LRT) was conducted. The random-intercept model was compared with a single-level model that did not include any school-level random effects.
+
+The hypotheses were:
+
+$$
+H_0:\quad \sigma^2_{u_0} = 0
+$$
+
+
+$$
+H_A:\quad \sigma^2_{u_0} > 0
+$$
+
+Here, (u_{0j}) represents the school-specific random intercept, and (\sigma^2_{u_0}) denotes the variance of the random intercept across schools.
+
+### Comparison of the Random-Intercept and Single-Level Models
+
+To assess whether teacher job satisfaction varies systematically across
+schools, an empty random-intercept model was compared with a corresponding
+single-level model containing only a fixed intercept. Both models were
+estimated using maximum likelihood.
+
+The likelihood-ratio test comparing the random-intercept model with the
+single-level model yielded $\chi^2(1)=1.65$ and an uncorrected
+$p=.1994$. Because the null hypothesis places the random-intercept
+variance on the boundary of the parameter space
+($\sigma^2_{u0}=0$), the usual chi-square reference distribution is not
+directly applicable. Following the boundary correction, the p-value was
+calculated as one half of the conventional chi-square tail probability,
+resulting in a corrected $p=.100$.
+
+Thus, at the conventional 5\% significance level, the null hypothesis
+that the between-school variance is zero was not rejected. There is
+therefore insufficient evidence that including a school-specific random
+intercept significantly improves the fit of the unconditional job
+satisfaction model.
+
+The information criteria led to a similar conclusion. The AIC was
+10668 for both the single-level and random-intercept models, indicating
+virtually no difference in relative model fit. The BIC was 10680 for the
+single-level model and 10686 for the random-intercept model. Because lower
+values indicate better relative fit, the BIC slightly favored the simpler
+single-level model.
+
+The estimated standard deviation of the school-specific random intercept
+was $SD=0.189$, while the residual standard deviation was $SD=1.873$.
+Overall, these results suggest that there is relatively little evidence
+of substantial between-school variation in teacher job satisfaction in the
+unconditional model.
+
+
+
+## Random Slope Test
+
+ 1. Individual Random Slope Tests
+For each predictor $v$ (where $v \in \{\text{age\_z}, \text{experience\_z}, \text{working\_hours\_z}, \text{ict\_use\_z}, \text{stress\_z}\}$), the baseline random intercept model is compared against a model incorporating a random slope.
+
+Age Random Slope (`age_z`):
+$H_0: \sigma^2_{1,\text{age}} = 0$ (The effect of teacher age on job satisfaction does not vary across schools)
+$H_1: \sigma^2_{1,\text{age}} > 0$ (The effect of teacher age on job satisfaction varies significantly across schools)
+
+Experience Random Slope (`experience_z`):
+$H_0: \sigma^2_{1,\text{exp}} = 0$ (The effect of teaching experience on job satisfaction does not vary across schools)
+$H_1: \sigma^2_{1,\text{exp}} > 0$ (The effect of teaching experience on job satisfaction varies significantly across schools)
+
+Working Hours Random Slope (`working_hours_z`):
+$H_0: \sigma^2_{1,\text{hours}} = 0$ (The effect of working hours on job satisfaction does not vary across schools)
+$H_1: \sigma^2_{1,\text{hours}} > 0$ (The effect of working hours on job satisfaction varies significantly across schools)
+
+ICT Use Random Slope (`ict_use_z`):
+$H_0: \sigma^2_{1,\text{ict}} = 0$ (The effect of ICT use on job satisfaction does not vary across schools)
+$H_1: \sigma^2_{1,\text{ict}} > 0$ (The effect of ICT use on job satisfaction varies significantly across schools)
+
+Stress Random Slope (`stress_z`):
+$H_0: \sigma^2_{1,\text{stress}} = 0$ (The effect of job stress on job satisfaction does not vary across schools)
+$H_1: \sigma^2_{1,\text{stress}} > 0$ (The effect of job stress on job satisfaction varies significantly across schools)
+
+
+
+#### 2. Uncorrelated Random Slope Test for Stress (`mod_stress_uncorr`)
+This test compares the random intercept model with an uncorrelated random slope model for stress (`(1 + stress_z || school_id)`), constraining the covariance between the intercept and slope to zero ($\rho = 0$).
+
+Hypothesis:
+$H_0: \sigma^2_{1,\text{stress}} = 0 \quad (\text{with } \rho = 0)$ (The variance of the stress slope is zero, and the random-intercept-only model is sufficient)
+$H_1: \sigma^2_{1,\text{stress}} > 0 \quad (\text{with } \rho = 0)$ (The effect of stress varies across schools even when constraining the covariance to zero)
+
+```{r,results='markup'}
+
+# ---------------------------------------------------------
+# Random-intercept model (baseline for all random-slope tests)
+# ---------------------------------------------------------
+mod_ri_reml <- lmer(
+  satisfaction ~
+    age_z +
+    experience_z +
+    working_hours_z +
+    ict_use_z +
+    stress_z +
+    lack_of_respect_z +
+    ses_disadvantage_z +
+    (1 | school_id),
+  data = data_model_clean,
+  REML = TRUE   # REML for random-effects tests, per Session 3
+)
+
+# Predictors for which random slopes are tested
+vars <- c(
+  "age_z",
+  "experience_z",
+  "working_hours_z",
+  "ict_use_z",
+  "stress_z"
+)
+
+# ---------------------------------------------------------
+# Step 1: correlated random-slope test for each predictor
+# (adds both the slope variance and its covariance with the
+# intercept at once, so the mixture correction is required
+# rather than the raw p-value)
+# ---------------------------------------------------------
+for (v in vars) {
+
+  form <- as.formula(
+    paste0(
+      "satisfaction ~ ",
+      "age_z + experience_z + working_hours_z + ",
+      "ict_use_z + stress_z + ",
+      "lack_of_respect_z + ses_disadvantage_z + ",
+      "(1 + ", v, " | school_id)"
+    )
+  )
+
+  mod_rs <- lmer(
+    form,
+    data = data_model_clean,
+    REML = TRUE   # REML for random-effects tests, per Session 3
+  )
+
+  test_v  <- anova(mod_ri_reml, mod_rs, refit = FALSE)
+  chisq_v <- test_v$Chisq[2]
+
+  # Mixture correction: 0.5 * chi-square(1) + 0.5 * chi-square(2)
+  p_mixture_v <- 0.5 * pchisq(chisq_v, df = 1, lower.tail = FALSE) +
+                 0.5 * pchisq(chisq_v, df = 2, lower.tail = FALSE)
+
+  cat("\n=== Random slope (correlated):", v, "===\n")
+  print(test_v)
+  cat("Mixture-corrected p-value:", p_mixture_v, "\n")
+  cat("Singular fit:", isSingular(mod_rs), "\n")
+}
+
+# ---------------------------------------------------------
+# Step 2: stress random-slope models (H6, H7, H8)
+# H6 = correlated random slope for stress vs. random-intercept-only
+#      (fit as mod_stress below; also produced by the Step-1 loop
+#      above when v = "stress_z", chi-sq(2) = 40.515)
+# H7 = uncorrelated random slope for stress vs. random-intercept-only
+#      (fit as mod_stress_uncorr below)
+# H8 = covariance test, uncorrelated vs. correlated stress models
+# ---------------------------------------------------------
+
+# Correlated random intercept and random slope (H6)
+mod_stress <- lmer(
+  satisfaction ~
+    age_z +
+    experience_z +
+    working_hours_z +
+    ict_use_z +
+    stress_z +
+    lack_of_respect_z +
+    ses_disadvantage_z +
+    (1 + stress_z | school_id),
+  data = data_model_clean,
+  REML = TRUE   # REML for random-effects tests, per Session 3
+)
+isSingular(mod_stress)
+VarCorr(mod_stress)
+
+# Uncorrelated stress random-slope model (correlation fixed at 0)
+mod_stress_uncorr <- lmer(
+  satisfaction ~
+    age_z +
+    experience_z +
+    working_hours_z +
+    ict_use_z +
+    stress_z +
+    lack_of_respect_z +
+    ses_disadvantage_z +
+    (1 + stress_z || school_id),
+  data = data_model_clean,
+  REML = TRUE   # REML for random-effects tests, per Session 3
+)
+isSingular(mod_stress_uncorr)
+VarCorr(mod_stress_uncorr)
+
+# H7: single-parameter test of the stress slope variance
+# (uncorrelated specification; boundary correction: p/2)
+test_stress_uncorr <- anova(mod_ri_reml, mod_stress_uncorr, refit = FALSE)
+chisq_stress <- test_stress_uncorr$Chisq[2]
+p_stress_corrected <- 0.5 * pchisq(chisq_stress, df = 1, lower.tail = FALSE)
+
+test_stress_uncorr
+cat("H7 boundary-corrected p-value:", p_stress_corrected, "\n")
+
+# H8: covariance test (not a boundary parameter, so no
+# correction is required)
+covariance_LRT_continuous <- anova(mod_stress_uncorr, mod_stress, refit = FALSE)
+covariance_LRT_continuous
+
+# ---------------------------------------------------------
+# Step 3: does an ICT-use random slope survive ON TOP OF the
+# already-retained stress random slope? H5 above only tested
+# ICT's slope against the random-intercept-only model, so it
+# never actually checked whether ICT's slope still holds once
+# stress's slope is already in the model. This step resolves
+# that directly instead of leaving it as an open note.
+# ---------------------------------------------------------
+mod_stress_ict_uncorr <- lmer(
+  satisfaction ~
+    age_z +
+    experience_z +
+    working_hours_z +
+    ict_use_z +
+    stress_z +
+    lack_of_respect_z +
+    ses_disadvantage_z +
+    (1 + stress_z + ict_use_z || school_id),
+  data = data_model_clean,
+  REML = TRUE   # REML for random-effects tests, per Session 3
+)
+
+isSingular(mod_stress_ict_uncorr)
+mod_stress_ict_uncorr@optinfo$conv
+VarCorr(mod_stress_ict_uncorr)
+
+# Adding the ICT slope on top of the stress-only model adds a
+# single boundary parameter (the ICT slope variance), so the
+# same p/2 boundary correction as H7 applies here. This is H9.
+test_stress_ict <- anova(mod_stress_uncorr, mod_stress_ict_uncorr, refit = FALSE)
+chisq_stress_ict <- test_stress_ict$Chisq[2]
+p_stress_ict_corrected <- 0.5 * pchisq(chisq_stress_ict, df = 1, lower.tail = FALSE)
+
+test_stress_ict
+cat("ICT-slope-on-top-of-stress boundary-corrected p-value:", p_stress_ict_corrected, "\n")
+
+# Decision rule: retain the ICT random slope in the final model
+# only if it (a) significantly improves fit here and (b) is
+# stable (non-singular, clean convergence). This is the same
+# significance-and-stability rule used later for the logistic
+# extension's automated model selection, applied consistently.
+converged_lmm <- function(model) {
+  conv <- model@optinfo$conv
+  opt_ok  <- is.null(conv$opt) || conv$opt == 0
+  lme4_ok <- is.null(conv$lme4$code)
+  opt_ok && lme4_ok
+}
+
+ict_slope_retained <- !is.na(p_stress_ict_corrected) &&
+  p_stress_ict_corrected < .05 &&
+  !isSingular(mod_stress_ict_uncorr) &&
+  converged_lmm(mod_stress_ict_uncorr)
+
+cat("ICT random slope retained in final model:", ict_slope_retained, "\n")
+
+# Random-effects part of the final model formula, built
+# programmatically so the model fit later always matches this
+# decision rather than being hardcoded independently of it.
+final_re_formula <- if (ict_slope_retained) {
+  "(1 + stress_z + ict_use_z || school_id)"
+} else {
+  "(1 + stress_z || school_id)"
+}
+```
+
+### Random-Slope Model Selection
+
+Random-slope models were estimated for age, teaching experience, weekly
+working hours, ICT use, and perceived work-related stress. Each model
+was compared with the random-intercept model using likelihood-ratio
+tests under REML estimation, following the modeling strategy of Session 3
+(random effects are tested with REML, fixed effects with ML). In R this
+requires `anova(..., refit = FALSE)`, since `anova()` otherwise refits
+both models with ML. Because each comparison adds
+two parameters simultaneously — the slope variance and its covariance
+with the random intercept — the raw likelihood-ratio p-value is not
+appropriate on its own. Following the boundary-correction approach
+described in the estimation lecture, a mixture-corrected p-value was
+computed as $p = 0.5 \cdot P(\chi^2_1 > \text{obs}) + 0.5 \cdot P(\chi^2_2 > \text{obs})$
+for each test.
+
+The random slopes for age and teaching experience did not significantly
+improve model fit, $\chi^2(2) = 2.34$, mixture-corrected $p = .218$, and
+$\chi^2(2) = 2.08$, mixture-corrected $p = .251$, respectively; both
+models were also singular. The random slope for weekly working hours
+likewise did not significantly improve fit, $\chi^2(2) = 3.30$,
+mixture-corrected $p = .131$, and this model was not singular.
+
+The random-slope model for ICT use produced a significant
+likelihood-ratio test, $\chi^2(2) = 14.43$, mixture-corrected
+$p < .001$, and this model was **not** singular, indicating a stable
+estimate of slope variance and covariance for this predictor.
+
+The correlated random-slope model for perceived stress (H6) also
+significantly improved model fit relative to the random-intercept
+model, $\chi^2(2) = 40.92$, mixture-corrected $p < .001$. However, this
+model resulted in a singular fit, with the estimated correlation between
+the school-specific random intercept and the random slope for stress
+reaching the boundary ($\widehat{\text{Corr}} = 1.00$). The estimated
+standard deviations were $0.245$ for the random intercept, $0.330$ for
+the random slope, and $1.577$ for the residual, confirming that the
+correlated random-effects structure was unstable for this predictor.
+
+To address the singularity, an uncorrelated random-slope model was
+estimated for stress, using the specification
+$(1 + \text{stress\_z} \,||\, \text{school\_id})$. This model converged
+without a singular-fit warning ($\widehat{\sigma}_{u_0} = 0.170$,
+$\widehat{\sigma}_{u_1} = 0.305$, $\widehat{\sigma}_\varepsilon =
+1.590$). The uncorrelated random-slope model (H7) significantly
+improved fit relative to the random-intercept model, $\chi^2(1) =
+16.14$, boundary-corrected $p < .001$ ($p = 2.95 \times 10^{-5}$). The
+REML AIC decreased from $9952.6$ for the random-intercept model to
+$9938.5$ for the uncorrelated random-slope model.
+
+The formal covariance test comparing the uncorrelated and correlated
+stress models (H8) also indicated a significant improvement in fit for
+the correlated specification, $\chi^2(1) = 24.78$, $p = 6.42 \times
+10^{-7}$, no boundary correction required. This result should be
+interpreted alongside the singularity evidence above: although the
+covariance term is statistically significant, the correlated model's
+boundary estimate ($\widehat{\text{Corr}} = 1.00$) indicates the
+estimate is not reliable, so the significant covariance test does not
+override the decision to retain the uncorrelated specification for
+stress.
+
+The results support allowing the effects of both ICT use and perceived
+stress on job satisfaction to vary across schools when each is tested
+on its own against the random-intercept model. However, H5 only tested
+the ICT slope against the random-intercept-only model, not against a
+model that already contains the retained stress random slope, so it
+does not by itself establish whether ICT's slope should also appear in
+the final specification. To resolve this directly, an additional
+nested model was fit that adds an uncorrelated random slope for ICT
+use on top of the already-retained stress random slope, specified as
+`(1 + stress_z + ict_use_z || school_id)`. Comparing this model against
+the stress-only uncorrelated model isolates the marginal contribution
+of the ICT slope, adding a single boundary parameter, so the same p/2
+boundary correction used for H7 applies (this test is H9):
+$\chi^2(1) = `r round(chisq_stress_ict, 3)`$, boundary-corrected
+$p `r ifelse(p_stress_ict_corrected < .001, "< .001", paste0("= ", signif(p_stress_ict_corrected, 3)))`$.
+This joint model `r ifelse(isSingular(mod_stress_ict_uncorr) || !converged_lmm(mod_stress_ict_uncorr), "did not fit stably (singular and/or non-converged), so it cannot be trusted even where the test above suggests an improvement", "converged cleanly with no singular-fit warning, so the two random slopes can be estimated jointly without a stability concern")`.
+
+Based on this test, the ICT random slope
+**`r ifelse(ict_slope_retained, "is retained", "is not retained")`**
+in the final model below. `r ifelse(ict_slope_retained, "Both the stress and ICT-use slopes are specified as uncorrelated with the random intercept and with each other, matching the stable specification already established for stress alone.", "Although ICT's slope was significant and stable when tested in isolation (H5), it does not survive as a stable, independent addition once the stress random slope is already present, so the final specification keeps only the uncorrelated random slope for stress. This is a scope decision resolved by an explicit test, not an unaddressed gap.")`
+
+
+## Fixed Effects Test
+
+```{r,results='markup'}
+
+# Reduced model: random intercept only
+m_reduced <- lmer(
+  satisfaction ~ 1 +
+    (1 | school_id),
+  data = data_model_clean,
+  REML = FALSE
+)
+
+# Full fixed effects model with random intercept
+m_fixed <- lmer(
+  satisfaction ~
+    age_z +
+    experience_z +
+    working_hours_z +
+    ict_use_z +
+    stress_z +
+    lack_of_respect_z +
+    ses_disadvantage_z +
+    (1 | school_id),
+  data = data_model_clean,
+  REML = FALSE
+)
+
+
+# Likelihood ratio test
+anova(m_reduced, m_fixed)
+
+summary(m_reduced)
+summary(m_fixed)
+
+```
+
+To examine whether the predictor variables improved model fit, the
+random-intercept-only model was compared with a model including all
+teacher-level and school-level predictors using a likelihood-ratio test
+(LRT). The full model included age, teaching experience, weekly working
+hours, ICT use, perceived stress, lack of respect for teachers, and the
+proportion of socioeconomically disadvantaged students.
+
+The hypotheses were:
+
+$$
+H_0:\quad
+\gamma_{10}=\gamma_{20}=\gamma_{30}=\gamma_{40}=\gamma_{50}=\gamma_{01}=\gamma_{02}=0
+$$
+
+$$
+H_A:
+\text{At least one fixed-effect coefficient is not equal to zero.}
+$$
+
+Under the null hypothesis, none of the teacher-level or school-level
+predictors contributes to explaining variation in teacher job
+satisfaction. Under the alternative hypothesis, at least one predictor
+is associated with teacher job satisfaction.
+
+The likelihood-ratio test indicated that the full fixed-effects model
+provided a substantially better fit to the data than the
+random-intercept-only model, $\chi^2(7)=767.85$, $p<.001$. Therefore,
+the null hypothesis was rejected, indicating that the predictors jointly
+contributed to explaining variation in teacher job satisfaction.
+
+This joint test (`m_fixed` vs. `m_reduced`, both random-intercept-only)
+establishes that the predictor set as a whole improves fit; it is not
+yet the model used for interpreting individual predictors. The
+random-effects tests in the next section determine that the stress and
+ICT-use slopes should be allowed to vary by school, and once those
+random slopes are added the standard errors and degrees of freedom for
+those two predictors change accordingly (most visibly for ICT use,
+whose test is then based on only the schools' worth of residual
+variation in that slope rather than the full teacher-level sample).
+For that reason, the size, direction, and significance of each
+individual predictor are reported and interpreted only once, in the
+Final Model section below, using the model that includes those random
+slopes -- not re-derived here from `m_fixed`, to avoid stating two
+different numbers for the same coefficient in this document.
+
+Because all predictors were standardized, the coefficients throughout
+represent the expected change in teacher job satisfaction associated
+with a one-standard-deviation increase in the corresponding predictor,
+holding the other predictors constant.
+
+Standardizing around the overall sample mean is a form of **grand-mean
+centering**. As Session 2 notes, this fixes the reference point of every
+predictor at its overall average, so the intercept $\gamma_{00}$ is the
+expected job satisfaction of a teacher at the average level of all
+predictors -- which is how it is interpreted throughout this report.
+Model fit is unaffected by centering; only the interpretation of the
+intercept changes. The alternative, group-mean centering, would instead
+express each teacher relative to their own school's mean and would allow
+the within-school and between-school components of a Level-1 predictor
+to be estimated separately (by additionally entering the school means as
+Level-2 predictors). That decomposition is not pursued here: the
+research question concerns the association of each characteristic with
+the outcome overall rather than a contrast between its within- and
+between-school components, and adding five school means would exceed the
+predictor budget the assignment allows. It is noted in the limitations
+as a possible extension.
+
+
+## Stepwise Fixed-Effects Selection
+
+Following the course's taught modeling strategy (Session 3, "Modeling
+strategy" and "Testing Strategy: Summary"): after testing which random
+effects are necessary (done above), the fixed effects are tested using
+ML, removing non-significant interactions first (there are none in
+this model) and then non-significant main effects. This is implemented
+below as iterative backward elimination: at each step, the single
+least-significant fixed effect (largest nested-LRT p-value against the
+current model) is dropped if its p-value exceeds .05, the model is
+refit, and the remaining terms are re-tested. This repeats until every
+remaining fixed effect is significant, which correctly handles cases
+where dropping one predictor changes another predictor's significance
+(relevant here, given the age/experience correlation reported above).
+
+```{r,results='markup'}
+
+alpha <- .05
+
+candidate_terms <- c(
+  "age_z", "experience_z", "working_hours_z", "ict_use_z",
+  "stress_z", "lack_of_respect_z", "ses_disadvantage_z"
+)
+
+# Random-effects structure already established above (final_re_formula)
+# -- held FIXED while fixed effects are tested below.
+fit_step_model <- function(terms) {
+  f <- as.formula(
+    paste0(
+      "satisfaction ~ ",
+      paste(terms, collapse = " + "),
+      " + ", final_re_formula
+    )
+  )
+  lmer(f, data = data_model_clean, REML = FALSE)
+}
+
+current_terms   <- candidate_terms
+step_num        <- 1
+elimination_log <- data.frame()
+
+repeat {
+
+  current_step_model <- fit_step_model(current_terms)
+
+  term_pvals <- sapply(current_terms, function(term) {
+    reduced_terms <- setdiff(current_terms, term)
+    reduced_model <- fit_step_model(reduced_terms)
+    test          <- anova(reduced_model, current_step_model)
+    test$`Pr(>Chisq)`[2]
+  })
+
+  cat("\n--- Step", step_num, "-- current terms:",
+      paste(current_terms, collapse = ", "), "---\n")
+  print(round(term_pvals, 4))
+
+  worst_term <- names(which.max(term_pvals))
+  worst_p    <- max(term_pvals)
+
+  elimination_log <- rbind(
+    elimination_log,
+    data.frame(
+      step = step_num,
+      least_significant_term = worst_term,
+      p_value = round(worst_p, 4),
+      action = ifelse(worst_p > alpha, "dropped",
+                       "stop -- all remaining terms significant")
+    )
+  )
+
+  if (worst_p <= alpha) {
+    cat("\nAll remaining fixed effects significant at alpha =", alpha,
+        "-- stopping.\n")
+    break
+  }
+
+  cat("Dropping:", worst_term, "(p =", round(worst_p, 4), ")\n")
+  current_terms <- setdiff(current_terms, worst_term)
+
+  if (length(current_terms) == 0) {
+    cat("All fixed effects eliminated -- stopping.\n")
+    break
+  }
+
+  step_num <- step_num + 1
+}
+
+cat("\n===================== Elimination log =====================\n")
+print(elimination_log, row.names = FALSE)
+
+# retained_terms is used everywhere below (Final Model and the
+# Logistic Extension) so both analyses always match this decision --
+# never hardcode the predictor list again after this point.
+retained_terms <- current_terms
+dropped_terms  <- setdiff(candidate_terms, retained_terms)
+
+cat("\nRetained fixed effects:", paste(retained_terms, collapse = ", "), "\n")
+cat("Dropped fixed effects:",   paste(dropped_terms,  collapse = ", "), "\n")
+
+```
+
+Terms are dropped one at a time, starting from the term with the
+largest nested-LRT p-value at each step, and the remaining terms are
+re-tested after each removal -- this is what makes the procedure
+genuinely stepwise rather than a single-pass drop of everything
+non-significant in the saturated model at once. `r if (length(dropped_terms) > 0) paste0("Based on this procedure, ", paste(dropped_terms, collapse = " and "), if (length(dropped_terms) > 1) " were" else " was", " dropped from the fixed-effects specification; ", paste(retained_terms, collapse = ", "), " were retained.") else "Based on this procedure, all seven predictors remained significant and none were dropped."`
+
+
+## Final Model
+
+
+```{r,results='markup'}
+# Correlations between predictors
+dat7 <- data_model_clean[, c(
+  "age_z",
+  "experience_z",
+  "working_hours_z",
+  "ict_use_z",
+  "stress_z",
+  "lack_of_respect_z",
+  "ses_disadvantage_z"
+)]
+
+round(cor(dat7, use = "complete.obs"), 1)
+
+```
+
+Multicollinearity was assessed by examining the correlations among the predictor variables. Most predictors showed only weak correlations with each other. However, age and teaching experience were strongly positively correlated (r=.90), indicating substantial overlap between these two predictors. The remaining correlations were relatively small, with the largest additional correlation being between lack of respect and the proportion of socioeconomically disadvantaged students (r=.40). Thus, particular caution is warranted when interpreting the separate effects of age and teaching experience.
+
+Two points are worth noting in light of the backward-elimination procedure reported above. First, both age and teaching experience were retained by that procedure, and both remained statistically significant with coefficients of opposite sign despite their high correlation. Severe multicollinearity typically inflates standard errors enough to render one or both such predictors non-significant, which did not occur here; the correlation is therefore best treated as a caution for interpretation rather than as evidence of an unstable model. Second, because $r=.90$ corresponds to a variance inflation factor of roughly $1/(1-.90^2)\approx5.3$ for these two terms, their standard errors are approximately $\sqrt{5.3}\approx2.3$ times larger than they would be if the two predictors were uncorrelated. Their individual coefficients should accordingly be read as the effect of each variable *holding the other constant* -- a comparison between teachers of the same age but differing experience, and vice versa -- rather than as the total effect of ageing or of accumulating experience.
+
+
+```{r,results='markup'}
+
+# The fixed-effects part of the formula (retained_terms) comes from
+# the Stepwise Fixed-Effects Selection section above; the random-
+# effects part (final_re_formula) was decided programmatically
+# earlier, based on whether the ICT random slope survives on top of
+# the stress random slope. This guarantees the fitted model always
+# matches both decisions -- never hardcode the predictor list here.
+final_model <- lmer(
+  as.formula(
+    paste0(
+      "satisfaction ~ ",
+      paste(retained_terms, collapse = " + "),
+      " + ", final_re_formula
+    )
+  ),
+  data = data_model_clean,
+  REML = TRUE
+)
+
+summary(final_model)
+VarCorr(final_model)
+isSingular(final_model)
+
+# Small helpers so every b/p reported below is read directly
+# from final_model rather than typed in by hand, so the text
+# automatically stays correct however the ICT-slope decision and
+# the fixed-effects elimination above turn out. If a term was
+# dropped during elimination, these return a placeholder instead
+# of erroring, so the document still knits -- the surrounding prose
+# in "Explaining Fixed Effects" below still needs a manual pass once
+# you know which terms were actually dropped (see the note there).
+fixef_b <- function(term) {
+  if (!(term %in% retained_terms)) return(NA_real_)
+  round(summary(final_model)$coefficients[term, "Estimate"], 3)
+}
+fixef_p <- function(term) {
+  if (!(term %in% retained_terms)) return("[dropped from final model]")
+  p <- summary(final_model)$coefficients[term, "Pr(>|t|)"]
+  if (p < .001) "< .001" else paste0("= ", signif(p, 2))
+}
+term_retained <- function(term) term %in% retained_terms
+
+
+```
+
+
+### Explaining Fixed Effects
+
+Because the predictors were standardized, the fixed-effect coefficients
+represent the expected change in teacher job satisfaction associated
+with a one-standard-deviation increase in the corresponding predictor,
+holding all other predictors constant. All five coefficients reported
+below are statistically significant, since the backward-elimination
+procedure retained only predictors that improved model fit; the two
+predictors removed during that procedure (weekly working hours and the
+proportion of socioeconomically disadvantaged students) are discussed
+at the end of this section.
+
+Perceived stress showed the strongest association with teacher job
+satisfaction. The fixed effect of stress was negative and statistically
+significant ($b=`r fixef_b("stress_z")`$, $p `r fixef_p("stress_z")`$).
+Thus, a one-standard-deviation increase in perceived stress was
+associated with an average decrease of approximately
+$`r abs(fixef_b("stress_z"))`$ points in teacher job satisfaction,
+holding the other predictors constant. `r ifelse(ict_slope_retained, "Because stress and ICT use both have random slopes in this model, this coefficient represents the average (fixed) effect of stress across schools, while the corresponding random-slope variance (reported below) captures how much that effect differs from school to school.", "")`
+
+Age was also negatively associated with job satisfaction
+($b=`r fixef_b("age_z")`$, $p `r fixef_p("age_z")`$). A
+one-standard-deviation increase in age was associated with an average
+decrease of approximately $`r abs(fixef_b("age_z"))`$ points in job
+satisfaction, controlling for the other predictors.
+
+Teaching experience was positively associated with job satisfaction
+($b=`r fixef_b("experience_z")`$, $p `r fixef_p("experience_z")`$).
+Thus, a one-standard-deviation increase in teaching experience was
+associated with an average increase of approximately
+$`r fixef_b("experience_z")`$ points in job satisfaction, holding the
+remaining predictors constant.
+
+ICT use was positively associated with job satisfaction
+($b=`r fixef_b("ict_use_z")`$, $p `r fixef_p("ict_use_z")`$). A
+one-standard-deviation increase in ICT use was associated with an
+average increase of approximately $`r fixef_b("ict_use_z")`$ points in
+job satisfaction. `r ifelse(ict_slope_retained, "Unlike the other teacher-level predictors, ICT use also has a random slope in this model: the value above is the average effect across schools, and the estimated slope variance (below) shows that this association is not the same size in every school.", "As established above, ICT use's random slope did not survive as a stable addition once the stress random slope was already in the model, so it is modeled here with a fixed (average) effect only.")`
+
+At the school level, lack of respect for teachers was negatively
+associated with teacher job satisfaction
+($b=`r fixef_b("lack_of_respect_z")`$, $p `r fixef_p("lack_of_respect_z")`$).
+Thus, a one-standard-deviation increase in the school-level measure of
+lack of respect was associated with an average decrease of approximately
+$`r abs(fixef_b("lack_of_respect_z"))`$ points in teacher job
+satisfaction, holding the other predictors constant.
+
+**Predictors removed during model selection.** Two predictors did not
+survive the backward-elimination procedure and are therefore not part
+of the final model. The proportion of socioeconomically disadvantaged
+students was removed first ($p=.511$ in the saturated model), and
+weekly working hours was removed at the second step ($p=.149$ in the
+model that no longer contained the SES term). In both cases, removing
+the predictor did not produce a significant deterioration in model fit,
+indicating that neither variable contributed detectably to explaining
+variation in teacher job satisfaction once the other predictors were
+accounted for. Following the interpretive convention used throughout
+this report, this is evidence of *insufficient support* for an
+association, not positive evidence that the true effect is exactly
+zero.
+
+
+### Overall Interpretation
+
+Overall, the final model indicates that four teacher-level
+characteristics are significantly associated with teacher job
+satisfaction. Perceived stress showed the strongest negative
+association, followed by age, whereas teaching experience and ICT use
+showed positive associations with job satisfaction. Weekly working
+hours did not survive model selection.
+
+At the school level, lack of respect for teachers was significantly and
+negatively associated with job satisfaction and was retained, whereas
+the proportion of socioeconomically disadvantaged students was removed
+during backward elimination.
+
+In addition to these fixed effects, the non-zero random-slope variance
+for perceived stress indicates that the relationship between stress and
+job satisfaction varies across schools. Thus, the negative association
+between perceived stress and job satisfaction represents an average
+effect across schools, while the magnitude of this association differs
+between schools. `r ifelse(ict_slope_retained, "The same is true for ICT use: its random-slope variance indicates that the (positive, on average) association between ICT use and job satisfaction also differs from school to school, rather than being fixed at the same size everywhere.", "ICT use, by contrast, is retained only as a fixed effect, since its random slope did not hold up once the stress random slope was already in the model (see the model-selection resolution above): its association with satisfaction is treated as constant in size across schools.")`
+
+
+
+### Explained Variance
+
+A multilevel model can be summarised by how much of the variance at each
+level it accounts for. Following Session 3 ("Explained variance"), a
+pseudo $R^2$ is computed separately for the Level-1 residual variance
+and the Level-2 random-intercept variance, by comparing variance
+components across three nested random-intercept models: an empty
+baseline model, a model adding the retained Level-1 predictors, and a
+model adding the retained Level-2 predictor. Random-intercept models are
+used throughout so that a single $\sigma^2_{u0}$ is comparable across
+the three fits; the random slopes of the final model would split the
+Level-2 variance into several components and make the comparison
+ambiguous.
+
+$$
+R^2_{11}=\frac{\sigma^2_{\epsilon|b}-\sigma^2_{\epsilon|m1}}{\sigma^2_{\epsilon|b}},
+\qquad
+R^2_{21}=\frac{\sigma^2_{u|b}-\sigma^2_{u|m1}}{\sigma^2_{u|b}}
+$$
+
+$$
+R^2_{12}=\frac{\sigma^2_{\epsilon|m1}-\sigma^2_{\epsilon|m2}}{\sigma^2_{\epsilon|m1}},
+\qquad
+R^2_{22}=\frac{\sigma^2_{u|m1}-\sigma^2_{u|m2}}{\sigma^2_{u|m1}}
+$$
+
+```{r explained_variance, results='markup'}
+
+# ============================================================
+# EXPLAINED VARIANCE (PSEUDO R-SQUARED)
+# ============================================================
+# Session 3, "Explained variance": compare the variance
+# components of three nested RANDOM-INTERCEPT models.
+#   b  = baseline (empty) model
+#   m1 = + Level-1 predictors
+#   m2 = + Level-2 predictors
+# REML is used, since these are variance-component estimates
+# rather than nested likelihood-ratio tests.
+
+l1_retained <- intersect(
+  retained_terms,
+  c("age_z", "experience_z", "working_hours_z", "ict_use_z", "stress_z")
+)
+l2_retained <- intersect(
+  retained_terms,
+  c("lack_of_respect_z", "ses_disadvantage_z")
+)
+
+m_var_base <- lmer(
+  satisfaction ~ 1 + (1 | school_id),
+  data = data_model_clean, REML = TRUE
+)
+
+m_var_l1 <- lmer(
+  as.formula(paste0(
+    "satisfaction ~ ", paste(l1_retained, collapse = " + "),
+    " + (1 | school_id)"
+  )),
+  data = data_model_clean, REML = TRUE
+)
+
+m_var_l2 <- lmer(
+  as.formula(paste0(
+    "satisfaction ~ ",
+    paste(c(l1_retained, l2_retained), collapse = " + "),
+    " + (1 | school_id)"
+  )),
+  data = data_model_clean, REML = TRUE
+)
+
+get_vc <- function(m) {
+  v <- as.data.frame(VarCorr(m))
+  c(
+    u0  = v$vcov[v$grp == "school_id" & !is.na(v$var1) & v$var1 == "(Intercept)"],
+    eps = v$vcov[v$grp == "Residual"]
+  )
+}
+
+vc_b  <- get_vc(m_var_base)
+vc_m1 <- get_vc(m_var_l1)
+vc_m2 <- get_vc(m_var_l2)
+
+variance_table <- data.frame(
+  model = c("Baseline (empty)", "+ Level-1 predictors", "+ Level-2 predictor"),
+  sigma2_eps = round(c(vc_b["eps"], vc_m1["eps"], vc_m2["eps"]), 5),
+  sigma2_u0  = round(c(vc_b["u0"],  vc_m1["u0"],  vc_m2["u0"]),  5)
+)
+print(variance_table, row.names = FALSE)
+
+R2_11 <- (vc_b["eps"]  - vc_m1["eps"]) / vc_b["eps"]    # L1 var explained by L1 preds
+R2_21 <- (vc_b["u0"]   - vc_m1["u0"])  / vc_b["u0"]     # L2 var explained by L1 preds
+R2_12 <- (vc_m1["eps"] - vc_m2["eps"]) / vc_m1["eps"]   # L1 var explained by L2 pred
+R2_22 <- (vc_m1["u0"]  - vc_m2["u0"])  / vc_m1["u0"]    # L2 var explained by L2 pred
+
+r2_table <- data.frame(
+  quantity = c("R2_11 (L1 var, L1 predictors)",
+               "R2_21 (L2 var, L1 predictors)",
+               "R2_12 (L1 var, L2 predictor)",
+               "R2_22 (L2 var, L2 predictor)"),
+  value    = round(c(R2_11, R2_21, R2_12, R2_22), 4),
+  percent  = paste0(round(100 * c(R2_11, R2_21, R2_12, R2_22), 2), "%")
+)
+print(r2_table, row.names = FALSE)
+
+```
+
+Note that $R^2_{21}$ can in principle come out negative. As the lecture
+notes, adding Level-1 predictors can *increase* the estimated Level-2
+variance when schools differ substantively in the distribution of those
+predictors, because the random intercept then has to absorb composition
+differences between schools that the raw baseline model had folded into
+the residual. A negative value is therefore a substantive result rather
+than a computational error, and is reported as such.
+
+**Results.** The Level-1 residual variance falls from 3.508 in the empty
+model to 2.617 once the four teacher-level predictors are added, so
+$R^2_{11}=.254$: the teacher-level characteristics account for about
+25.4% of the variance in job satisfaction *between teachers within the
+same school*. The same predictors also reduce the school-level variance,
+from 0.0375 to 0.0341, giving $R^2_{21}=.091$. This second figure is not
+a school-level effect in its own right: it reflects the fact that
+schools differ in the composition of their teaching staff, so part of
+what looked like between-school variance in the empty model was actually
+a difference in who works where.
+
+Adding the school-level predictor then produces the pattern the
+multilevel framework predicts. It explains none of the Level-1 variance
+($R^2_{12}=.000$; the residual variance moves only from 2.61667 to
+2.61664), which is exactly right -- lack of respect is constant within a
+school, so it cannot possibly account for why two teachers *in the same
+school* differ. What it does explain is between-school variance: the
+school-level variance falls further from 0.0341 to 0.0294, so
+$R^2_{22}=.138$, meaning the single school-level predictor accounts for
+roughly 13.8% of the between-school differences that remained after
+controlling for staff composition.
+
+These figures should be read against the ICC of 1.06%. Because so little
+of the total variance in job satisfaction lies between schools in the
+first place, explaining 13.8% of that small share is a modest
+contribution in absolute terms. The substantial explanatory work in this
+model is done at Level 1, which is consistent with the fixed-effects
+results, where the teacher-level predictors -- and stress in particular
+-- carry far larger coefficients than the school-level one.
+
+
+### Level 1: Teacher Level
+
+$$
+satisfaction_{ij}
+=
+\beta_{0j}
++
+\gamma_{10}\text{age\_z}_{ij}
++
+\gamma_{20}\text{experience\_z}_{ij}
++
+`r if (ict_slope_retained) "\\beta_{4j}\\text{ict\\_use\\_z}_{ij}" else "\\gamma_{40}\\text{ict\\_use\\_z}_{ij}"`
++
+\beta_{5j}\text{stress\_z}_{ij}
++
+\varepsilon_{ij}
+$$
+
+### Level 2: School Level
+
+$$
+\beta_{0j}
+=
+\gamma_{00}
++
+\gamma_{01}\text{lack\_of\_respect\_z}_j
++
+u_{0j}
+$$
+
+`r if (ict_slope_retained) "$$\n\\beta_{4j}\n=\n\\gamma_{40}\n+\nu_{4j}\n$$" else ""`
+
+$$
+\beta_{5j}
+=
+\gamma_{50}
++
+u_{5j}
+$$
+
+For the uncorrelated random-slope model,
+
+$$
+\operatorname{Cov}(u_{0j},u_{5j})=0`r if (ict_slope_retained) ",\\ \\operatorname{Cov}(u_{0j},u_{4j})=0,\\ \\operatorname{Cov}(u_{4j},u_{5j})=0" else ""`.
+$$
+
+### Final Combined Model (with Random Slope)
+
+$$
+\begin{aligned}
+satisfaction_{ij}
+={}&
+\gamma_{00}
++
+\gamma_{10}\text{age\_z}_{ij}
++
+\gamma_{20}\text{experience\_z}_{ij}
++
+\gamma_{40}\text{ict\_use\_z}_{ij}
+\\
+&+
+\gamma_{50}\text{stress\_z}_{ij}
++
+\gamma_{01}\text{lack\_of\_respect\_z}_j
+\\
+&+
+u_{0j}
+`r if (ict_slope_retained) "+\nu_{4j}\\text{ict\\_use\\_z}_{ij}" else ""`
++
+u_{5j}\text{stress\_z}_{ij}
++
+\varepsilon_{ij}.
+\end{aligned}
+$$
+
+`r if (ict_slope_retained) "Here $\\beta_{4j} = \\gamma_{40} + u_{4j}$ replaces the earlier fixed-only $\\gamma_{40}\\text{ict\\_use\\_z}_{ij}$ term, since the ICT random slope is retained in the final model." else ""`
+
+To extend the main analysis to a non-continuous outcome, a multilevel logistic regression model was estimated to examine teachers' intentions to leave the teaching profession. The binary dependent variable, `leave`, indicates whether a teacher has considered leaving the teaching profession. A value of 1 indicates that the teacher has considered leaving, whereas a value of 0 indicates that the teacher has not.
+
+The same teacher-level and school-level predictors retained by the main analysis's Stepwise Fixed-Effects Selection (`retained_terms`) are used here as well, rather than re-deriving a separate predictor set for this outcome -- see the note above the Stepwise Fixed-Effects Selection code for why. `r paste0("The retained predictors are: ", paste(retained_terms, collapse = ", "), ".")` Because teachers are nested within schools, a random intercept for school was included.
+
+A logistic rather than a linear mixed model was used because the dependent variable is binary. Following the estimation procedures discussed in the lecture, the model assumes a Bernoulli distribution for the outcome and uses the logit link. The model was estimated by maximum likelihood using numerical approximation. In `glmer()`, the default estimation uses the Laplace approximation. The lecture notes emphasize that ML, rather than REML, is used for GLMMs and for likelihood-based model comparisons.
+
+```{r logistic_model, results='markup'}
+
+# ============================================================
+# EXTENSION ANALYSIS
+# Multilevel Logistic Regression
+# Outcome: Intention to Leave
+# ============================================================
+
+# Binary outcome:
+# leave = 1: seriously considered leaving classroom teaching
+# leave = 0: did not seriously consider leaving classroom teaching
+
+
+# ------------------------------------------------------------
+# 1. Check the binary outcome
+# ------------------------------------------------------------
+
+table(
+  data_model_clean$leave,
+  useNA = "ifany"
+)
+
+round(
+  100 * prop.table(
+    table(data_model_clean$leave)
+  ),
+  2
+)
+
+
+# ------------------------------------------------------------
+# 2. Create the analysis dataset
+# ------------------------------------------------------------
+# Only the outcome, school_id, and the predictors actually
+# RETAINED by the main analysis's backward elimination
+# (retained_terms) are selected here -- consistent with the rule
+# stated above ("never hardcode the predictor list again after
+# this point"). working_hours_z and ses_disadvantage_z were
+# dropped from the fixed-effects model and are never used in
+# model_logistic, so they must not be part of the complete-case
+# filter either: including them here would let a teacher with
+# missing working_hours_z or ses_disadvantage_z be excluded from
+# the logistic analysis even though those two variables never
+# appear in any logistic model.
+
+data_logistic <- data_model_clean %>%
+  dplyr::select(
+    leave,
+    dplyr::all_of(retained_terms),
+    school_id
+  ) %>%
+  na.omit()
+
+# Number of teachers
+nrow(data_logistic)
+
+# Number of schools
+length(
+  unique(data_logistic$school_id)
+)
+
+
+# ============================================================
+# 3. NULL MODEL: RANDOM INTERCEPT ONLY
+# ============================================================
+# The null model contains only a random intercept for school.
+#
+# It allows the baseline log-odds of considering leaving
+# the teaching profession to vary across schools.
+
+model_logistic_null <- glmer(
+  leave ~
+    (1 | school_id),
+  data = data_logistic,
+  family = binomial(link = "logit"),
+  nAGQ = 1
+)
+
+summary(model_logistic_null)
+
+
+# ============================================================
+# 4. FULL RANDOM-INTERCEPT MODEL
+# ============================================================
+# The model contains the SAME predictors retained by the main
+# continuous-outcome analysis's Stepwise Fixed-Effects Selection
+# (retained_terms), not a hardcoded list and not an independently
+# re-derived set. Keeping the same predictor set across both
+# outcomes is intentional: an "extension" analysis is meant to
+# test whether the SAME teacher- and school-level characteristics
+# matter for a different (here: binary) outcome, not to re-derive
+# a new predictor set from scratch. This also satisfies the
+# syllabus requirement that both DVs use the same predictor set.
+#
+# Random intercept:
+# (1 | school_id)
+
+model_logistic <- glmer(
+  as.formula(
+    paste0(
+      "leave ~ ",
+      paste(retained_terms, collapse = " + "),
+      " + (1 | school_id)"
+    )
+  ),
+  data = data_logistic,
+  family = binomial(link = "logit"),
+  nAGQ = 1
+)
+
+summary(model_logistic)
+
+
+# ============================================================
+# 5. FIXED-EFFECT MODEL COMPARISON
+# ============================================================
+# Compare the full random-intercept model with the
+# random-intercept-only null model.
+#
+# H0:
+# All retained fixed-effect coefficients are equal to zero.
+#
+# HA:
+# At least one fixed-effect coefficient is different from zero.
+
+fixed_effect_LRT <- anova(
+  model_logistic_null,
+  model_logistic,
+  test = "Chisq"
+)
+
+fixed_effect_LRT
+
+
+# ============================================================
+# 6. RANDOM-SLOPE TESTS FOR ALL TEACHER-LEVEL PREDICTORS
+# ============================================================
+# This mirrors the Random Slope Test of the main (continuous)
+# analysis: every teacher-level predictor in the retained set is
+# given its own uncorrelated random slope, tested against the
+# random-intercept-only model by LRT, with the same p/2 boundary
+# correction (the slope variance sits on the boundary sigma^2 >= 0
+# under H0) and the same stability requirement (non-singular +
+# clean convergence).
+#
+# Only Level-1 (teacher-level) predictors can have random slopes
+# across schools; lack_of_respect_z is a Level-2 (school-level)
+# variable and is constant within a school, so it is excluded.
+
+l1_terms <- intersect(
+  retained_terms,
+  c("age_z", "experience_z", "working_hours_z", "ict_use_z", "stress_z")
+)
+
+converged_glmm <- function(model) {
+  conv    <- model@optinfo$conv
+  opt_ok  <- is.null(conv$opt) || conv$opt == 0
+  lme4_ok <- is.null(conv$lme4$code)
+  opt_ok && lme4_ok
+}
+
+rs_results <- data.frame()
+rs_models  <- list()
+
+for (v in l1_terms) {
+
+  form_v <- as.formula(
+    paste0(
+      "leave ~ ",
+      paste(retained_terms, collapse = " + "),
+      " + (1 | school_id) + (-1 + ", v, " | school_id)"
+    )
+  )
+
+  mod_v <- try(
+    glmer(
+      form_v,
+      data   = data_logistic,
+      family = binomial(link = "logit"),
+      nAGQ   = 1
+    ),
+    silent = TRUE
+  )
+
+  if (inherits(mod_v, "try-error")) {
+    rs_results <- rbind(rs_results, data.frame(
+      predictor = v, chisq = NA, p_raw = NA, p_corrected = NA,
+      singular = NA, converged = FALSE, decision = "model failed to fit"
+    ))
+    next
+  }
+
+  rs_models[[v]] <- mod_v
+
+  test_v <- anova(model_logistic, mod_v, test = "Chisq")
+  chisq_v <- test_v$Chisq[2]
+  p_raw_v <- test_v$`Pr(>Chisq)`[2]
+  p_cor_v <- 0.5 * p_raw_v          # boundary correction, as in the main analysis
+
+  sing_v  <- isSingular(mod_v)
+  conv_v  <- converged_glmm(mod_v)
+  keep_v  <- !is.na(p_cor_v) && p_cor_v < .05 && !sing_v && conv_v
+
+  rs_results <- rbind(rs_results, data.frame(
+    predictor   = v,
+    chisq       = round(chisq_v, 3),
+    p_raw       = signif(p_raw_v, 3),
+    p_corrected = signif(p_cor_v, 3),
+    singular    = sing_v,
+    converged   = conv_v,
+    decision    = ifelse(keep_v, "RETAIN random slope", "do not retain")
+  ))
+
+  cat("\n=== Random slope (logistic):", v, "===\n")
+  print(test_v)
+  cat("Boundary-corrected p:", p_cor_v,
+      " | singular:", sing_v, " | converged:", conv_v, "\n")
+}
+
+cat("\n============ Random-slope test summary (logistic) ============\n")
+print(rs_results, row.names = FALSE)
+
+slopes_retained <- rs_results$predictor[
+  rs_results$decision == "RETAIN random slope"
+]
+
+cat("\nRandom slopes retained (logistic):",
+    if (length(slopes_retained)) paste(slopes_retained, collapse = ", ") else "none",
+    "\n")
+
+
+# ============================================================
+# 7. COVARIANCE TESTS FOR THE RETAINED RANDOM SLOPES
+# ============================================================
+# For every slope retained in step 6, test whether it should be
+# allowed to correlate with the random intercept -- the same H8
+# test used in the main analysis. No boundary correction is
+# needed here: a covariance is not a boundary parameter.
+
+cov_results <- data.frame()
+
+for (v in slopes_retained) {
+
+  form_corr <- as.formula(
+    paste0(
+      "leave ~ ",
+      paste(retained_terms, collapse = " + "),
+      " + (1 + ", v, " | school_id)"
+    )
+  )
+
+  mod_corr <- try(
+    glmer(
+      form_corr,
+      data   = data_logistic,
+      family = binomial(link = "logit"),
+      nAGQ   = 1
+    ),
+    silent = TRUE
+  )
+
+  if (inherits(mod_corr, "try-error")) {
+    cov_results <- rbind(cov_results, data.frame(
+      predictor = v, chisq = NA, p = NA,
+      singular = NA, converged = FALSE,
+      decision = "correlated model failed to fit -- keep uncorrelated"
+    ))
+    next
+  }
+
+  test_c  <- anova(rs_models[[v]], mod_corr, test = "Chisq")
+  chisq_c <- test_c$Chisq[2]
+  p_c     <- test_c$`Pr(>Chisq)`[2]
+  sing_c  <- isSingular(mod_corr)
+  conv_c  <- converged_glmm(mod_corr)
+  keep_c  <- !is.na(p_c) && p_c < .05 && !sing_c && conv_c
+
+  cov_results <- rbind(cov_results, data.frame(
+    predictor = v,
+    chisq     = round(chisq_c, 3),
+    p         = signif(p_c, 3),
+    singular  = sing_c,
+    converged = conv_c,
+    decision  = ifelse(keep_c,
+                       "use CORRELATED specification",
+                       "keep uncorrelated specification")
+  ))
+
+  cat("\n=== Covariance test (logistic):", v, "===\n")
+  print(test_c)
+  cat("singular:", sing_c, " | converged:", conv_c, "\n")
+}
+
+if (nrow(cov_results)) {
+  cat("\n============ Covariance test summary (logistic) ============\n")
+  print(cov_results, row.names = FALSE)
+} else {
+  cat("\nNo random slopes retained, so no covariance test is required.\n")
+}
+
+
+# ============================================================
+# 8. RANDOM-EFFECTS STRUCTURE OF THE LOGISTIC MODEL
+# ============================================================
+# Built programmatically from steps 6-7 so the fitted model always
+# matches the test results rather than being hardcoded.
+
+if (length(slopes_retained) == 0) {
+  logistic_re_formula <- "(1 | school_id)"
+} else {
+  logistic_re_formula <- paste0(
+    "(1 + ", paste(slopes_retained, collapse = " + "), " || school_id)"
+  )
+}
+
+cat("\nLogistic random-effects structure:", logistic_re_formula, "\n")
+
+
+# ============================================================
+# 9. FINAL LOGISTIC MODEL
+# ============================================================
+# The fixed-effects part is INHERITED from the main analysis
+# (retained_terms) and is not re-selected here. Session 6's own
+# worked example follows the same pattern: in the toenail models
+# the fixed effects (treatment + month + treatment:month) are
+# identical in mod1, mod2 and mod3, and every model comparison
+# concerns the random-effects structure only. Model selection for
+# a binary outcome is therefore carried out in steps 6-8 above;
+# the fixed effects are TESTED (joint LRT in step 5, individual
+# Wald z-tests below) but are not used as a selection criterion.
+
+model_logistic_final <- glmer(
+  as.formula(
+    paste0(
+      "leave ~ ",
+      paste(retained_terms, collapse = " + "),
+      " + ", logistic_re_formula
+    )
+  ),
+  data   = data_logistic,
+  family = binomial(link = "logit"),
+  nAGQ   = 1
+)
+
+final_model_choice <- paste0(
+  "shared predictor set + random-effects structure ",
+  logistic_re_formula
+)
+
+cat("Selected final logistic model:", final_model_choice, "\n")
+
+summary(model_logistic_final)
+isSingular(model_logistic_final)
+model_logistic_final@optinfo$conv
+
+
+# ------------------------------------------------------------
+# 9.1 Documentation only: which predictors would a backward
+#     elimination on THIS outcome have removed?
+# ------------------------------------------------------------
+# Reported as a one-line note in the write-up, not as a competing
+# model. The predictor set is deliberately held identical across
+# the two dependent variables so that each predictor's role can
+# be compared between outcomes; re-selecting here would make that
+# comparison impossible and would breach the requirement that
+# both DVs use the same predictors.
+
+wald_p <- summary(model_logistic_final)$coefficients[, "Pr(>|z|)"]
+wald_p <- wald_p[names(wald_p) != "(Intercept)"]
+
+ns_for_leave <- names(wald_p)[wald_p >= .05]
+
+cat("\nNon-significant for intention to leave (retained anyway):",
+    if (length(ns_for_leave)) paste(ns_for_leave, collapse = ", ") else "none",
+    "\n")
+
+
+# ============================================================
+# 10. MODEL FIT COMPARISON
+# ============================================================
+# Candidates: the null model, the shared-predictor random-intercept
+# model, every single-slope model fitted in step 6, and the final
+# model selected in step 9.
+
+fit_candidates <- c(
+  list(
+    null    = model_logistic_null,
+    shared  = model_logistic,
+    final   = model_logistic_final
+  ),
+  setNames(rs_models, paste0("rs_", names(rs_models)))
+)
+
+fit_table <- data.frame(
+  model = names(fit_candidates),
+  npar  = sapply(fit_candidates, function(m) attr(logLik(m), "df")),
+  AIC   = round(sapply(fit_candidates, AIC), 3),
+  BIC   = round(sapply(fit_candidates, BIC), 3)
+)
+
+print(fit_table, row.names = FALSE)
+
+
+# ============================================================
+# 11. FIXED EFFECTS OF THE FINAL MODEL
+# ============================================================
+# Coefficients are estimated on the log-odds scale.
+
+summary(
+  model_logistic_final
+)$coefficients
+
+
+# ============================================================
+# 12. ODDS RATIOS
+# ============================================================
+# Exponentiating a logistic regression coefficient
+# gives the corresponding odds ratio.
+
+odds_ratios <- exp(
+  fixef(model_logistic_final)
+)
+
+odds_ratios
+
+# Compact results table
+logistic_results <- data.frame(
+  Predictor = names(
+    fixef(model_logistic_final)
+  ),
+
+  Estimate = fixef(
+    model_logistic_final
+  ),
+
+  Odds_Ratio = exp(
+    fixef(model_logistic_final)
+  ),
+
+  SE = summary(
+    model_logistic_final
+  )$coefficients[, "Std. Error"],
+
+  z = summary(
+    model_logistic_final
+  )$coefficients[, "z value"],
+
+  p = summary(
+    model_logistic_final
+  )$coefficients[, "Pr(>|z|)"]
+)
+
+logistic_results
+
+
+# ============================================================
+# 13. 95% CONFIDENCE INTERVALS FOR ODDS RATIOS
+# ============================================================
+
+beta <- fixef(
+  model_logistic_final
+)
+
+se <- sqrt(
+  diag(
+    vcov(model_logistic_final)
+  )
+)
+
+OR_results <- data.frame(
+  Predictor = names(beta),
+
+  Estimate = beta,
+
+  Odds_Ratio = exp(beta),
+
+  CI_lower = exp(
+    beta - 1.96 * se
+  ),
+
+  CI_upper = exp(
+    beta + 1.96 * se
+  ),
+
+  SE = se,
+
+  z = beta / se,
+
+  p = summary(
+    model_logistic_final
+  )$coefficients[, "Pr(>|z|)"]
+)
+
+OR_results
+
+
+# ============================================================
+# 14. RANDOM EFFECTS
+# ============================================================
+
+VarCorr(
+  model_logistic_final
+)
+
+# School-level random-intercept variance
+school_variance <- as.numeric(
+  VarCorr(
+    model_logistic_final
+  )$school_id[1]
+)
+
+school_variance
+
+# School-level random-intercept SD
+school_sd <- sqrt(
+  school_variance
+)
+
+school_sd
+
+
+# ============================================================
+# 15. RANDOM SLOPE VARIANCES
+# ============================================================
+# This is relevant if the final model contains a
+# random stress slope.
+
+if (
+  "stress_z" %in%
+  rownames(
+    as.data.frame(
+      VarCorr(model_logistic_final)$school_id
+    )
+  )
+) {
+
+  stress_slope_variance <- as.numeric(
+    VarCorr(
+      model_logistic_final
+    )$school_id["stress_z", "stress_z"]
+  )
+
+  stress_slope_sd <- sqrt(
+    stress_slope_variance
+  )
+
+  stress_slope_variance
+
+  stress_slope_sd
+}
+
+
+# ============================================================
+# 16. INTRACLASS CORRELATION COEFFICIENT
+# ============================================================
+# Two ICCs are reported here, for the same reason the continuous-
+# outcome ICC (Session 2-5, mod0) was computed from the EMPTY model
+# before any predictors were added: the "standard" ICC that describes
+# how strongly teachers cluster within schools BY DESIGN -- independent
+# of which predictors are later chosen -- is the UNCONDITIONAL one,
+# taken from model_logistic_null. That is the figure comparable to the
+# 1.06% reported for job satisfaction.
+#
+# The CONDITIONAL ICC below (using school_variance, i.e. AFTER the 5
+# retained predictors are already in the model) is also informative --
+# it shows how much between-school heterogeneity is left over once the
+# predictors are accounted for -- but it is a different quantity, and
+# is reported and labeled as such rather than as a substitute for the
+# unconditional ICC.
+#
+# For a random-intercept logistic model, the Level-1
+# residual variance on the latent scale is fixed at:
+#
+# pi^2 / 3
+#
+# (this is a property of the standard logistic distribution,
+# not something estimated from the data)
+
+# --- Unconditional ICC: null model, before any predictors ---
+null_variance_logistic <- as.numeric(
+  VarCorr(model_logistic_null)$school_id[1]
+)
+
+icc_logistic_unconditional <- null_variance_logistic /
+  (
+    null_variance_logistic +
+      pi^2 / 3
+  )
+
+icc_logistic_unconditional
+
+100 * icc_logistic_unconditional
+
+# --- Conditional ICC: final model, after the 5 predictors ---
+icc_logistic_conditional <- school_variance /
+  (
+    school_variance +
+      pi^2 / 3
+  )
+
+icc_logistic_conditional
+
+100 * icc_logistic_conditional
+
+# kept for compatibility with the results table below
+icc_logistic <- icc_logistic_conditional
+
+
+# ============================================================
+# 17. MODEL DIAGNOSTICS
+# ============================================================
+
+# Singularity
+isSingular(
+  model_logistic_final
+)
+
+# Convergence
+model_logistic_final@optinfo$conv
+
+
+# ============================================================
+# 18. PREDICTED PROBABILITIES
+# ============================================================
+# Conditional predictions include school-specific
+# random effects.
+
+data_logistic$predicted_probability <-
+  predict(
+    model_logistic_final,
+    type = "response"
+  )
+
+# Predicted probability curve as a function of perceived stress
+# (the strongest predictor), following the same approach used in
+# Session 6, Part 2.3 for the simple logistic regression example:
+# the model's fitted probabilities are plotted against the predictor,
+# together with the fitted probability curve implied by the fixed
+# effects (other predictors held at their mean = 0, since all are
+# standardized; school random intercept held at u0 = 0, i.e. an
+# average school).
+
+b_log_final <- fixef(model_logistic_final)
+
+yhat_stress <- function(x) {
+  plogis(b_log_final[["(Intercept)"]] + b_log_final[["stress_z"]] * x)
+}
+
+plot(
+  data_logistic$stress_z,
+  data_logistic$predicted_probability,
+  xlab = "Perceived stress (standardized)",
+  ylab = "P(considering leaving)",
+  main = "Predicted probability of leaving vs. stress",
+  pch = 16,
+  col = adjustcolor("black", alpha.f = 0.15),
+  ylim = c(0, 1)
+)
+curve(
+  yhat_stress,
+  from = min(data_logistic$stress_z),
+  to   = max(data_logistic$stress_z),
+  add  = TRUE,
+  col  = "red",
+  lwd  = 2
+)
+abline(h = 0.5, lty = 3)
+
+
+# ============================================================
+# 19. FINAL COMPACT RESULTS TABLE
+# ============================================================
+
+final_logistic_table <- data.frame(
+  Predictor = names(
+    fixef(model_logistic_final)
+  ),
+
+  Estimate = round(
+    fixef(model_logistic_final),
+    3
+  ),
+
+  Odds_Ratio = round(
+    exp(fixef(model_logistic_final)),
+    3
+  ),
+
+  SE = round(
+    summary(
+      model_logistic_final
+    )$coefficients[, "Std. Error"],
+    3
+  ),
+
+  z = round(
+    summary(
+      model_logistic_final
+    )$coefficients[, "z value"],
+    3
+  ),
+
+  p = round(
+    summary(
+      model_logistic_final
+    )$coefficients[, "Pr(>|z|)"],
+    4
+  ),
+
+  ICC_unconditional_percent = round(
+    100 * icc_logistic_unconditional,
+    2
+  ),
+
+  ICC_conditional_percent = round(
+    100 * icc_logistic_conditional,
+    2
+  )
+)
+
+final_logistic_table
+
+
+```
+
+
+## Extension Analysis: Multilevel Logistic Regression
+
+To extend the main analysis to a non-continuous outcome, a multilevel logistic regression model was estimated to examine teachers' intentions to leave the teaching profession. The binary outcome indicated whether a teacher had seriously considered leaving classroom teaching. A value of 1 indicated that the teacher had seriously considered leaving, whereas a value of 0 indicated that the teacher had not. The coding of the outcome was based on the original questionnaire response, with responses recoded as 1 = yes and 0 = no.
+
+The final estimation sample consisted of 2,599 teachers nested within 192 schools. Of these teachers, 559 (21.51%) had seriously considered leaving the teaching profession, while 2,040 (78.49%) had not.
+
+Because the dependent variable was binary, a generalized linear mixed model (GLMM) with a Bernoulli distribution and a logit link was estimated. The model included the same predictors retained by the main analysis's backward-elimination procedure -- four teacher-level predictors (age, teaching experience, ICT use, and perceived stress) and one school-level predictor (lack of respect for teachers). Weekly working hours and socio-economic disadvantage were not part of that retained set and are therefore absent from this model as well. A random intercept for school was included to account for the nesting of teachers within schools.
+
+Following the estimation procedure discussed in the lecture, the model was estimated using maximum likelihood with the Laplace approximation (`glmer()`, `nAGQ = 1`). Unlike the linear mixed model, REML was not used for the GLMM, and all likelihood-based model comparisons below were therefore also estimated by maximum likelihood.
+
+### Model Comparison (Fixed-Effects Likelihood-Ratio Test)
+
+A likelihood-ratio test was used to compare the full multilevel logistic model with the random-intercept-only null model. The full model provided a significantly better fit to the data than the null model,
+
+$$
+\chi^2(5)=362.97,\quad p<.001.
+$$
+
+The test has 5 degrees of freedom because the model contains the five predictors retained by the main analysis's backward-elimination procedure. The AIC decreased from 2703.20 for the null model to 2350.23 for the full model, and the log-likelihood increased from $-1349.60$ to $-1168.12$. The null hypothesis that the fixed-effect predictors jointly provide no improvement in model fit was therefore rejected: the teacher- and school-level predictors jointly provide a significant improvement in model fit relative to the random-intercept-only model.
+
+### Fixed Effects
+
+In the multilevel logistic regression model, the fixed-effect coefficients are expressed on the log-odds scale. Because the predictors were standardized, each coefficient represents the change in the log-odds of considering leaving the teaching profession associated with a one-standard-deviation increase in the predictor, holding all other predictors constant. For ease of interpretation, the coefficients were exponentiated to obtain odds ratios, and 95% confidence intervals were computed as $\exp(b \pm 1.96 \times SE)$.
+
+Perceived stress was the strongest predictor of teachers' intentions to leave. The coefficient was positive and statistically significant,
+
+$$
+b=0.942,\quad SE=0.055,\quad p<.001.
+$$
+
+The corresponding odds ratio was
+
+$$
+OR=\exp(0.942)=2.566\ \ (95\%\ CI:\ 2.306,\ 2.855).
+$$
+
+Thus, a one-standard-deviation increase in perceived stress was associated with approximately 2.57 times higher odds of seriously considering leaving classroom teaching, holding all other predictors constant. Equivalently, the odds of considering leaving were approximately 157% higher.
+
+Teacher age was also positively associated with intentions to leave,
+
+$$
+b=0.389,\quad SE=0.109,\quad p<.001,
+$$
+
+with an odds ratio of
+
+$$
+OR=\exp(0.389)=1.476\ \ (95\%\ CI:\ 1.191,\ 1.828).
+$$
+
+Thus, a one-standard-deviation increase in age was associated with approximately 47.6% higher odds of seriously considering leaving the teaching profession, holding the other predictors constant.
+
+Teaching experience was not statistically significant,
+
+$$
+b=-0.110,\quad SE=0.107,\quad p=.308,\quad OR=0.896\ \ (95\%\ CI:\ 0.726,\ 1.106).
+$$
+
+The odds ratio below 1 indicates a negative estimated association, but the non-significant $p$-value means that there was insufficient statistical evidence for an association between teaching experience and teachers' odds of considering leaving the profession.
+
+ICT use was also not statistically significant at the 5% significance level,
+
+$$
+b=-0.098,\quad SE=0.054,\quad p=.067,\quad OR=0.907\ \ (95\%\ CI:\ 0.816,\ 1.007).
+$$
+
+Although the estimated association was negative, the $p$-value exceeded .05. Therefore, there was insufficient evidence to conclude that ICT use was associated with teachers' odds of considering leaving the profession.
+
+The single retained school-level predictor, lack of respect for teachers, was not significantly associated with the outcome,
+
+$$
+b=0.036,\quad SE=0.061,\quad p=.558,\quad OR=1.037\ \ (95\%\ CI:\ 0.919,\ 1.169).
+$$
+
+Thus, after controlling for the teacher-level characteristics, there was no statistically significant evidence that the school-level measure of lack of respect was associated with teachers' intentions to leave the teaching profession. Finally, the intercept was $b=-1.569$, $SE=0.068$, $z=-23.03$, $p<.001$, $OR=0.208$ (95% CI: 0.182, 0.238), representing the baseline log-odds of considering leaving for a teacher at the average level of all predictors.
+
+It is worth noting explicitly that the predictor set was selected on the *continuous* outcome (job satisfaction) and then carried over unchanged to this binary outcome, as described above. Consequently, several predictors that were significant for job satisfaction -- teaching experience, ICT use, and lack of respect -- are not significant here. This is an informative result rather than a defect of the specification: it shows that the characteristics explaining how satisfied teachers are with their work are not the same as those explaining whether they are considering leaving it. Only perceived stress and age carry over as significant predictors of both outcomes.
+
+### Random Effect Tests
+
+The random-effects structure of the logistic model was determined using
+the same procedure as the main analysis, rather than testing only the
+stress slope. Every teacher-level predictor in the retained set
+(`r paste(l1_terms, collapse = ", ")`) was given its own uncorrelated
+random slope and tested against the random-intercept-only model by
+likelihood-ratio test. As in the main analysis, the raw $p$-value was
+halved, because the slope variance lies on the boundary of its parameter
+space under $H_0$ ($\sigma^2 \ge 0$), and a slope was retained only if
+it was both significant *and* stable -- non-singular with clean optimizer
+convergence. The school-level predictor `lack_of_respect_z` is constant
+within a school and therefore cannot have a random slope across schools;
+it is excluded from these tests by construction.
+
+For every slope that survived that step, a second test compared the
+uncorrelated specification with one allowing the slope to correlate with
+the random intercept. No boundary correction applies to that comparison,
+since a covariance is not a boundary parameter.
+
+**Results.** None of the four random slopes was retained. The slope for
+teaching experience came closest, $\chi^2(1)=2.42$, boundary-corrected
+$p=.060$, but did not reach the .05 threshold. The remaining three fell
+well short: teacher age, $\chi^2(1)=0.74$, corrected $p=.196$; perceived
+stress, $\chi^2(1)=0.22$, corrected $p=.319$; and ICT use,
+$\chi^2(1)=0.00$, corrected $p=.500$. The ICT-use model was additionally
+flagged as singular, its slope variance having been estimated at
+effectively zero, which is the numerical signature of a random effect
+the data provide no support for. The other three models were
+non-singular and converged cleanly, so their non-significant results
+reflect genuine absence of slope variance rather than estimation
+failure. Because no slope survived, no covariance test was required and
+the random-effects structure of the final model reduces to a random
+intercept alone, `(1 | school_id)`.
+
+This is a substantive contrast with the main analysis rather than a null
+finding to be passed over. For job satisfaction, the effects of both
+perceived stress and ICT use varied significantly across schools; for
+intention to leave, no predictor's effect does. Schools differ in their
+*baseline* propensity for teachers to consider leaving -- the random
+intercept variance is non-zero, $\sigma^2_{u0}=0.1603$ -- but the way
+each predictor translates into turnover risk is statistically
+indistinguishable from one school to the next. In other words, schools
+shift the overall level of turnover intention without moderating how
+stress, age, experience or ICT use operate within them.
+
+The stress result deserves particular note, since stress is the
+strongest predictor in both analyses. Its slope varied significantly
+across schools for job satisfaction, $\chi^2(2)=40.92$, mixture-corrected
+$p<.001$, yet shows no detectable variation for intention to leave,
+$\chi^2(1)=0.22$, corrected $p=.319$. Part of this difference is likely
+statistical rather than substantive: a binary outcome carries
+considerably less information per observation than a 0--10 scale, and
+with roughly three teachers per school reporting that they have
+considered leaving, the data provide limited leverage for estimating
+between-school variation in a slope.
+
+### Model Specification and Fit Comparison Across Candidate Models
+
+The models estimated during the logistic model-building process are
+specified below. Model 1 is the null model; Model 2 adds the shared
+fixed-effect predictor set; the single-slope models of the random-effect
+tests add one random slope at a time to Model 2; and the final model
+applies the random-effects structure that survived those tests. The AIC
+and BIC of every candidate are printed by the model-fit comparison code
+above (`fit_table`).
+
+**Model 1: Null Model (`model_logistic_null`)** — random intercept only, no fixed effects.
+
+Level 1 (Teacher Level):
+
+$$
+logit(p_{ij}) = \beta_{0j}
+$$
+
+Level 2 (School Level):
+
+$$
+\beta_{0j} = \gamma_{00} + u_{0j}, \qquad u_{0j}\sim N(0,\sigma^2_{u0})
+$$
+
+Combined Model:
+
+$$
+logit(p_{ij}) = \gamma_{00} + u_{0j}
+$$
+
+**Model 2: Full Random-Intercept Model (`model_logistic`).** Adds the `r length(retained_terms)` retained teacher- and school-level predictors (`r paste(retained_terms, collapse = ", ")`) to the random-intercept structure.
+
+Level 1 (Teacher Level):
+
+$$
+logit(p_{ij}) = \beta_{0j} + \gamma_{10}\text{age\_z}_{ij} + \gamma_{20}\text{experience\_z}_{ij} + \gamma_{40}\text{ict\_use\_z}_{ij} + \gamma_{50}\text{stress\_z}_{ij}
+$$
+
+Level 2 (School Level):
+
+$$
+\beta_{0j} = \gamma_{00} + \gamma_{01}\text{lack\_of\_respect\_z}_j + u_{0j}, \qquad u_{0j}\sim N(0,\sigma^2_{u0})
+$$
+
+Combined Model:
+
+$$
+logit(p_{ij}) = \gamma_{00} + \gamma_{10}\text{age\_z}_{ij} + \gamma_{20}\text{experience\_z}_{ij} + \gamma_{40}\text{ict\_use\_z}_{ij} + \gamma_{50}\text{stress\_z}_{ij} + \gamma_{01}\text{lack\_of\_respect\_z}_j + u_{0j}
+$$
+
+**Single-slope models (`rs_age_z`, `rs_experience_z`, `rs_ict_use_z`, `rs_stress_z`).** Each is Model 2 plus one uncorrelated random slope, of the general form
+
+$$
+\beta_{pj} = \gamma_{p0} + u_{pj}, \qquad \operatorname{Cov}(u_{0j},u_{pj}) = 0,
+$$
+
+for the predictor $p$ under test. Where a slope survived, a correlated counterpart with $\operatorname{Cov}(u_{0j},u_{pj}) \neq 0$ was fitted as well.
+
+**Final model (`model_logistic_final`).** The shared predictor set combined with the random-effects structure that survived the tests above, printed in the output as `logistic_re_formula`.
+
+**Fit comparison and final model.** The information criteria agree with
+the likelihood-ratio tests. Adding predictors to the null model produces
+by far the largest improvement, with AIC falling from 2703.20 to 2350.23
+and BIC from 2714.93 to 2391.27. None of the four single-slope models
+improves on that: on BIC, which penalises the extra variance parameter
+more heavily, every one is worse than the random-intercept model
+(2396.72 to 2399.13, against 2391.27). On AIC the picture is marginally
+less uniform -- the experience-slope model is fractionally lower
+(2349.81 vs. 2350.23, a difference of 0.42) -- but a gap of this size is
+well inside the range attributable to adding a parameter that does
+nothing, and it is not supported by that model's likelihood-ratio test
+(corrected $p=.060$) or by its BIC. The random-intercept model with the
+five inherited predictors is therefore retained as the final model on
+all three grounds: the slope tests, AIC, and BIC.
+
+| Model | npar | AIC | BIC |
+|:------------------------------------------|-----:|---------:|---------:|
+| Null model (random intercept only)         |    2 | 2703.204 | 2714.929 |
+| **Final: random intercept + 5 predictors** |    7 | **2350.230** | **2391.271** |
+| + random slope for age                     |    8 | 2351.496 | 2398.399 |
+| + random slope for experience              |  8 | 2349.811 | 2396.715 |
+| + random slope for ICT use (singular)      | 8 | 2352.230 | 2399.134 |
+| + random slope for stress                  |    8 | 2352.009 | 2398.912 |
+
+Table: AIC and BIC for the candidate logistic models. The null model corresponds to `model_logistic_null`; the final model to `model_logistic` / `model_logistic_final`; the four single-slope models to `rs_age_z`, `rs_experience_z`, `rs_ict_use_z` and `rs_stress_z` in the output above.
+
+Because no random slope was retained, `model_logistic` and
+`model_logistic_final` are the same fitted model and are reported
+identically in the table above.
+
+### Sensitivity Check: Would a Sparser Model Fit Better?
+
+The predictor set is held fixed across the two outcomes for the reasons
+given below, which means several predictors that are not significant for
+intention to leave are nevertheless retained. It is worth checking
+explicitly what that costs in terms of model fit, rather than simply
+asserting that the cost is acceptable. The model containing only the
+predictors that are significant for this outcome is therefore fitted and
+compared with the retained model on AIC and BIC. This comparison is
+reported as a sensitivity check; it does not change the model that is
+interpreted.
+
+```{r sparser_check, results='markup'}
+
+# ============================================================
+# SENSITIVITY: full inherited set vs. only the significant ones
+# ============================================================
+# Reported, not acted on. See the justification below for why the
+# shared predictor set is retained regardless of this comparison.
+
+sig_for_leave <- setdiff(retained_terms, ns_for_leave)
+
+model_logistic_sparse <- glmer(
+  as.formula(
+    paste0("leave ~ ", paste(sig_for_leave, collapse = " + "),
+           " + ", logistic_re_formula)
+  ),
+  data   = data_logistic,
+  family = binomial(link = "logit"),
+  nAGQ   = 1
+)
+
+sparse_lrt <- anova(model_logistic_sparse, model_logistic_final,
+                    test = "Chisq")
+sparse_lrt
+
+sensitivity_table <- data.frame(
+  model = c(paste0("Retained set (", length(retained_terms), " predictors)"),
+            paste0("Significant only (", length(sig_for_leave), " predictors)")),
+  npar  = c(attr(logLik(model_logistic_final),  "df"),
+            attr(logLik(model_logistic_sparse), "df")),
+  AIC   = round(c(AIC(model_logistic_final),  AIC(model_logistic_sparse)), 3),
+  BIC   = round(c(BIC(model_logistic_final),  BIC(model_logistic_sparse)), 3)
+)
+print(sensitivity_table, row.names = FALSE)
+
+cat("\nDropped in the sparse model:",
+    paste(ns_for_leave, collapse = ", "), "\n")
+
+```
+
+Both information criteria mildly favor the sparser, two-predictor model over the retained five-predictor model: AIC is `r round(AIC(model_logistic_final) - AIC(model_logistic_sparse), 2)` points lower, and BIC is `r round(BIC(model_logistic_final) - BIC(model_logistic_sparse), 2)` points lower, for the sparser specification. The likelihood-ratio test comparing the two is not significant,
+$$
+\chi^2(`r sparse_lrt$Df[2]`)=`r round(sparse_lrt$Chisq[2], 2)`,\quad p=`r round(sparse_lrt[["Pr(>Chisq)"]][2], 3)`,
+$$
+confirming that experience, ICT use, and lack of respect do not jointly improve model fit by a statistically detectable amount once age and stress are already included. Model-fit criteria therefore offer a mild, non-decisive preference for the simpler model.
+
+The five-predictor model is nonetheless retained as the model that is interpreted, because the reason for including experience, ICT use, and lack of respect was never to improve prediction of this particular outcome -- it was to keep the predictor set identical to the one used for job satisfaction, so that each predictor's role could be compared honestly across both dependent variables (see the next section). This sensitivity check confirms that doing so is close to costless in fit terms, and that whatever small cost it does carry is not statistically significant.
+
+### Why the Fixed Effects Are Not Re-Selected Here
+
+Model selection in this extension concerns the random-effects structure
+only; the fixed-effect predictors are inherited from the main analysis
+and are tested but not re-selected. This is deliberate, and it matches
+how the course treats binary outcomes. In the worked example of Session
+6, the fixed effects (`treatment + month + treatment:month`) are
+identical across all three fitted models, and every model comparison in
+that session concerns whether a random slope is required and whether it
+should be correlated with the random intercept. No fixed-effect
+elimination is performed there at all.
+
+Holding the predictor set fixed across the two dependent variables also
+serves the design of this project directly. Because both outcomes are
+modelled with the same predictors, each coefficient can be compared
+across outcomes: a predictor may matter for job satisfaction, for
+turnover intention, for both, or for neither, and that comparison is
+only possible if nothing is removed from one model but not the other.
+Re-running backward elimination on the binary outcome would produce a
+smaller and different predictor set, breaking both the comparison and
+the requirement that both dependent variables use the same predictors.
+
+The fixed effects are nonetheless *tested* in two ways. The joint
+likelihood-ratio test in the model-comparison section above establishes
+that the inherited predictor set explains variation in this outcome as
+well -- something that could not be assumed, since the set was selected
+on a different dependent variable. The individual Wald $z$-tests
+reported below then establish which of those predictors are associated
+with intention to leave. Predictors that are not significant here are
+reported as substantive findings rather than removed: they indicate
+characteristics that predict how satisfied teachers are without
+predicting whether they are considering leaving. The code above prints
+this set as `ns_for_leave`.
+
+### Random Effects
+
+The final model included a random intercept for school, allowing the baseline log-odds of considering leaving the teaching profession to vary across schools.
+
+The estimated variance of the school-specific random intercept was
+
+$$
+\sigma^2_{u0}=`r round(school_variance, 4)`,
+$$
+
+with a standard deviation of
+
+$$
+SD_{u0}=`r round(school_sd, 4)`.
+$$
+
+This indicates that there was remaining between-school heterogeneity in teachers' baseline log-odds of considering leaving the profession after controlling for the fixed-effect predictors.
+
+### Intraclass Correlation Coefficient
+
+For a random-intercept logistic regression model, the Level-1 residual variance is not estimated directly. Instead, on the latent logistic scale, it is fixed at
+
+$$
+\sigma^2_e=\frac{\pi^2}{3}.
+$$
+
+As with the continuous outcome, the ICC that describes how strongly teachers cluster within schools *by design* -- independent of which predictors are later chosen -- is computed from the null model, before any predictors are added. Using the school-level variance from `model_logistic_null`,
+
+$$
+ICC_{unconditional}=
+\frac{\sigma^2_{u0,\ null}}
+{\sigma^2_{u0,\ null}+\frac{\pi^2}{3}}
+=`r round(icc_logistic_unconditional, 4)`,
+$$
+
+so
+
+$$
+ICC_{unconditional}\approx`r round(100 * icc_logistic_unconditional, 2)`\%.
+$$
+
+This is the figure directly comparable to the $1.06\%$ ICC reported for job satisfaction: teachers cluster somewhat more strongly by school in their intention to leave than in their job satisfaction, though both figures are modest.
+
+It is also informative to ask how much between-school variance remains once the five retained predictors are already in the model -- the *conditional* ICC. Using the estimated school-level variance from the final model,
+
+$$
+ICC_{conditional}=
+\frac{\sigma^2_{u0}}
+{\sigma^2_{u0}+\frac{\pi^2}{3}}
+=`r round(icc_logistic_conditional, 4)`,
+$$
+
+so
+
+$$
+ICC_{conditional}\approx`r round(100 * icc_logistic_conditional, 2)`\%.
+$$
+
+That the conditional ICC is not smaller than the unconditional one is worth stating explicitly rather than passing over: the five predictors do not explain away between-school clustering in intention to leave -- if anything, controlling for them leaves the relative importance of the school level intact or slightly increased, which is itself a small but genuine finding about this outcome.
+
+Although both figures are relatively small, neither is zero. This indicates that teachers within the same school show some similarity in their underlying propensity to consider leaving the teaching profession -- a similarity present in the data before any predictors are considered, and still present, essentially undiminished, after controlling for the five teacher- and school-level predictors. Accounting for the clustering of teachers within schools through a random-intercept specification is therefore appropriate for this outcome. Read alongside the Random Effect Tests above, this paints a consistent picture: schools differ in their baseline propensity for teachers to consider leaving, but not, on this evidence, in how any individual predictor operates within them.
+
+### Predicted Probabilities
+
+Following the same approach used in Session 6 for the simple logistic regression example (predicted probability curves for employment status), the fitted probability of considering leaving is plotted as a function of perceived stress -- the strongest predictor in the model. Each point is a teacher's conditional predicted probability (incorporating their own school's random intercept); the red curve is the average probability implied by the fixed effects alone, with every other predictor held at its mean (0, since all are standardized) and the school random intercept held at $u_0=0$ -- i.e., an average school.
+
+Because perceived stress was measured on an ordinal (4-point) response scale, its standardized values take only four distinct positions, so the points fall into four vertical bands rather than a smooth scatter -- this is a real feature of the predictor, not a plotting artifact. The average curve rises steeply across those four bands: about 4% at the lowest stress level, 10% at the second, 26% at the third, and 51% at the highest -- crossing the 50% mark right at the top stress category, consistent with the reported coefficient ($OR=2.57$). The intercept itself, $\gamma_{00}$, exponentiates to $OR=0.208$, the baseline odds for a teacher at the average level of every predictor. Within each band, predicted probability still varies visibly, reflecting the influence of the other fixed effects (particularly age) together with each teacher's school-specific baseline propensity; one teacher at the third stress level stands out with a predicted probability of about 0.60, noticeably above the rest of that band, consistent with an unusually high random intercept for that school. This illustrates that the model captures meaningful individual- and school-level variation in risk beyond what the average curve alone shows.
+
+### Multilevel Logistic Regression Equation
+
+Because the outcome is binary, the final model is specified in terms of the probability that teacher $i$ in school $j$ seriously considered leaving classroom teaching, using a Bernoulli distribution, a linear predictor, and a logit link function.
+
+The conditional distribution of the binary outcome is
+
+$$
+(leave_{ij}\mid X_{ij},u_{0j})
+\sim
+Bernoulli(p_{ij}),
+$$
+
+where
+
+$$
+p_{ij}
+=
+P(leave_{ij}=1\mid X_{ij},u_{0j})
+$$
+
+is the conditional probability that teacher $i$ in school $j$ has seriously considered leaving classroom teaching.
+
+The linear predictor for teacher $i$ in school $j$ is defined as
+
+$$
+\eta_{ij}
+=
+\gamma_{00}
++\gamma_{10}\text{age\_z}_{ij}
++\gamma_{20}\text{experience\_z}_{ij}
++\gamma_{40}\text{ict\_use\_z}_{ij}
++\gamma_{50}\text{stress\_z}_{ij}
++\gamma_{01}\text{lack\_of\_respect\_z}_j
++u_{0j}.
+$$
+
+No random slope is included in the linear predictor, consistent with the model-selection results above. The school-specific random intercept is assumed to follow
+
+$$
+u_{0j}\sim N(0,\sigma^2_{u0}).
+$$
+
+The logit link connects the linear predictor $\eta_{ij}$ to the conditional expected value $p_{ij}$:
+
+$$
+\eta_{ij}
+=
+\operatorname{logit}(p_{ij})
+=
+\ln\left(
+\frac{p_{ij}}{1-p_{ij}}
+\right).
+$$
+
+Equivalently, the conditional probability can be obtained using the inverse-logit transformation:
+
+$$
+p_{ij}
+=
+\frac{\exp(\eta_{ij})}
+{1+\exp(\eta_{ij})}.
+$$
+
+
+## Residual Analysis
+
+### Residual Analysis for the Continuous Outcome
+
+The assumptions of the linear mixed model were assessed by examining the Level-1 residuals and the estimated random effects. In particular, the residuals were examined for approximately constant variance and approximate normality, while the random effects were inspected for substantial deviations from normality.
+
+```{r residual_analysis_lmm, results='markup'}
+
+# Normality of Level-1 residuals
+eps <- residuals(final_model)
+qqnorm(eps, main = "Normal Q-Q Plot: Level-1 Residuals")
+qqline(eps)
+
+# Random effects
+ranef_school <- ranef(final_model)$school_id
+u0 <- ranef_school$`(Intercept)`
+u5 <- ranef_school$stress_z
+par(mfrow = c(1,1))
+
+# Random intercept
+qqnorm(u0, main = "Normal Q-Q Plot: School Random Intercepts")
+qqline(u0)
+plot(
+  density(u0),
+  main = "Density of School Random Intercepts",
+  xlab = "Random intercept"
+)
+
+# Random slope for stress
+qqnorm(u5, main = "Normal Q-Q Plot: Random Slopes for Stress")
+qqline(u5)
+plot(
+  density(u5),
+  main = "Density of Random Stress Slopes",
+  xlab = "Random slope for stress"
+)
+
+# Random slope for ICT use, only present if the model-selection
+# step above retained it in the final model.
+if (ict_slope_retained) {
+  u4 <- ranef_school$ict_use_z
+  qqnorm(u4, main = "Normal Q-Q Plot: Random Slopes for ICT Use")
+  qqline(u4)
+  plot(
+    density(u4),
+    main = "Density of Random ICT Use Slopes",
+    xlab = "Random slope for ICT use"
+  )
+}
+
+# Homoscedasticity
+yhat <- fitted(final_model)
+plot(
+  yhat,
+  eps,
+  xlab = "Fitted values",
+  ylab = "Residuals",
+  main = "Residuals vs. Fitted Values"
+)
+abline(h = 0)
+
+# Scatter-smooth plots
+scatter.smooth(
+  data_model_clean$age_z,
+  data_model_clean$satisfaction,
+  main = "Satisfaction and Age",
+  xlab = "Age",
+  ylab = "Job Satisfaction"
+)
+scatter.smooth(
+  data_model_clean$experience_z,
+  data_model_clean$satisfaction,
+  main = "Satisfaction and Teaching Experience",
+  xlab = "Teaching Experience",
+  ylab = "Job Satisfaction"
+)
+scatter.smooth(
+  data_model_clean$working_hours_z,
+  data_model_clean$satisfaction,
+  main = "Satisfaction and Working Hours",
+  xlab = "Working Hours",
+  ylab = "Job Satisfaction"
+)
+scatter.smooth(
+  data_model_clean$ict_use_z,
+  data_model_clean$satisfaction,
+  main = "Satisfaction and ICT Use",
+  xlab = "ICT Use",
+  ylab = "Job Satisfaction",
+  span = 1, degree = 1  # ict_use_z has only a handful of distinct
+                        # values; the default loess span is numerically
+                        # unstable here (repeated "pseudoinverse used"
+                        # warnings). Cosmetic fix only -- doesn't touch
+                        # any fitted model.
+)
+scatter.smooth(
+  data_model_clean$stress_z,
+  data_model_clean$satisfaction,
+  main = "Satisfaction and Stress",
+  xlab = "Stress",
+  ylab = "Job Satisfaction",
+  span = 1, degree = 1  # same reason as ICT use above
+)
+
+```
+
+
+#### Interpretation of the Diagnostics (Continuous Outcome)
+
+The assumptions of the linear mixed model were assessed by examining the Level-1 residuals and the estimated random effects. The Level-1 residuals, obtained via residuals(final_model), were checked for approximate normality using a normal Q-Q plot, and for constant variance using a residuals-versus-fitted-values plot. The school-level random intercepts and the random slopes for stress, extracted via ranef(final_model), were each checked for approximate normality using a Q-Q plot together with a kernel density plot. Finally, scatter-smooth plots of job satisfaction against each standardized predictor (age, teaching experience, working hours, ICT use, and stress) were produced as an exploratory check of the marginal relationships in the raw data, rather than as formal residual diagnostics.
+
+The Q-Q plot of the Level-1 residuals shows that the residuals follow the reference line reasonably well through the central part of the distribution, with visible deviation in the tails. This indicates that the assumption of normally distributed Level-1 residuals is not perfectly met, although the departure is confined mainly to the extremes rather than the bulk of the distribution. The residuals-versus-fitted-values plot shows some structure in the spread of residuals across the range of fitted values rather than a uniform band, suggesting that the constant-variance assumption is not fully satisfied. This is not entirely unexpected given that job satisfaction is measured on a bounded 0–10 scale, which limits how much residuals can vary near the upper and lower ends of the scale.
+
+The Q-Q plot and density plot of the school-level random intercepts are broadly consistent with a normal distribution, with only minor deviation in the tails. The Q-Q plot and density plot of the random slopes for stress show a similar pattern: reasonable agreement with the reference line and a roughly symmetric, unimodal density, with some deviation at the extremes. `r ifelse(ict_slope_retained, "The random slopes for ICT use, retained alongside the stress slope in the final model, were checked the same way: the Q-Q plot shows reasonable agreement with the reference line through the central mass of schools, with mild curvature and a small number of outlying schools at both tails, and the density plot is roughly symmetric and unimodal with a slightly heavier right tail, consistent with those same outlying schools.", "")` Taken together, the random-effects diagnostics show less evidence of departure from normality than the Level-1 residuals do.
+
+The scatter-smooth plots indicate comparatively weak marginal associations between job satisfaction and age, teaching experience, working hours, and ICT use, while stress shows a visibly negative marginal association with job satisfaction. Because these plots do not adjust for the other predictors or account for the multilevel structure of the data, they should be read only as a descriptive check on the raw bivariate relationships and not as a basis for interpreting the final model's coefficients.
+
+Overall, the diagnostics point to a mild departure from normality in the Level-1 residuals and some non-constant variance in the residuals-versus-fitted-values plot, while the random-effects distributions appear reasonably well behaved. These departures are best treated as limitations of the fitted model rather than evidence that its assumptions are fully satisfied.
+
+
+
+
+
+### Residual Analysis for the Binary Outcome
+
+For the multilevel logistic regression, conventional normality and constant-variance assumptions for Level-1 residuals do not apply because the outcome follows a Bernoulli distribution. As emphasised in the lecture, plotting individual-level residuals against fitted probabilities is largely *uninformative* for a binary outcome: because each observed $y_{ij}$ is either 0 or 1, the residuals necessarily fall into two bands, and this pattern is expected rather than a sign of misfit. The recommended alternatives, followed below, are (a) the **binned residual plot** of Gelman and Hill, which averages Pearson residuals within bins of fitted values so that the discreteness cancels out, (b) a Q-Q plot of the empirical Bayes estimates of the random intercepts to check the normality assumption for $u_{0j}$, and (c) simulation-based scaled residuals (DHARMa), which have a known uniform distribution under a correctly specified model regardless of the outcome type. The raw Pearson and deviance residual plots are retained below only for contrast, to make the two-band pattern visible.
+
+```{r binned_residuals_logistic, results='markup'}
+
+# ============================================================
+# 20. BINNED RESIDUAL PLOT (Gelman & Hill)
+# ============================================================
+# For binary outcomes, raw residual-vs-fitted plots are
+# uninformative (two bands). Binning averages the Pearson
+# residuals within bins of fitted values; points outside the
+# grey bands indicate potential misfit.
+#
+# NOTE: arm (and DHARMa) are loaded HERE rather than in the setup
+# chunk on purpose. arm depends on MASS, and MASS::select() masks
+# dplyr::select(). Loading them only after all data-wrangling is
+# finished keeps select() pointing at dplyr throughout the document.
+
+library(arm)
+
+par(mfrow = c(1, 2))
+
+# Raw deviance residuals -- shown only for contrast
+plot(
+  fitted(model_logistic_final),
+  residuals(model_logistic_final, type = "deviance"),
+  xlab = "Fitted P(y=1)",
+  ylab = "Deviance residual",
+  main = "Raw residuals\n(two bands expected for binary y)"
+)
+abline(h = 0, lty = 2)
+
+# Binned residual plot -- the informative version
+binnedplot(
+  fitted(model_logistic_final),
+  residuals(model_logistic_final, type = "pearson"),
+  main = "Binned residual plot\n(Pearson residuals)"
+)
+
+par(mfrow = c(1, 1))
+
+# ------------------------------------------------------------
+# Overall goodness of fit: deviance / df should be close to 1
+# ------------------------------------------------------------
+dev_ratio <- deviance(model_logistic_final) / df.residual(model_logistic_final)
+cat("Deviance / df (should be ~1):", round(dev_ratio, 3), "\n")
+
+# ------------------------------------------------------------
+# Q-Q plot of the empirical Bayes random intercepts
+# ------------------------------------------------------------
+u0_logistic <- ranef(model_logistic_final)$school_id[["(Intercept)"]]
+
+qqnorm(u0_logistic, main = "Q-Q plot of school random intercepts u0j")
+qqline(u0_logistic)
+
+```
+
+```{r dharma_logistic, results='markup'}
+
+# ============================================================
+# 21. SIMULATION-BASED RESIDUALS (DHARMa)
+# ============================================================
+# DHARMa simulates n = 500 new response vectors from the fitted
+# model and records the quantile at which each observed y_ij
+# falls. Under a correctly specified model these quantiles are
+# uniform on (0,1) for ANY model type, which sidesteps the
+# binary-outcome problem entirely.
+
+library(DHARMa)
+
+sim_res_logistic <- simulateResiduals(
+  fittedModel = model_logistic_final,
+  n = 500
+)
+
+plot(sim_res_logistic)
+
+# H0: scaled residuals are uniform U(0,1). A significant result
+# indicates global misfit; with large n this test is sensitive
+# to minor deviations, so inspect the Q-Q plot visually too.
+testUniformity(sim_res_logistic)
+
+# For a Bernoulli GLMM the variance is fully determined by the
+# mean, so overdispersion signals extra-binomial variation not
+# captured by the random effects.
+testDispersion(sim_res_logistic)
+
+```
+
+**Diagnostic results.** The simulation-based checks give the model a
+clean bill of health. The ratio of deviance to residual degrees of
+freedom is 0.865, close to the value of 1 expected under a correctly
+specified Bernoulli model. DHARMa's Kolmogorov--Smirnov test of
+uniformity is non-significant, $D=0.023$, $p=.130$, as are its
+dispersion test ($p=.584$) and outlier test ($p=.116$); the residual
+plot reports "no significant problems detected." The Q-Q plot of the
+school random intercepts follows the reference line closely through the
+central range, with mild deviation in the upper tail where one school
+carries a markedly higher intercept than normality would predict, so the
+normality assumption for $u_{0j}$ is approximately rather than exactly
+satisfied. The two-band pattern in the raw Pearson and deviance residual
+plots is, as expected for a binary outcome, a structural feature and not
+evidence of misfit.
+
+### Logit versus Probit Link
+
+The lecture notes that the choice of link function corresponds to an assumption about the distribution of the latent error $\epsilon_{ij}$ in the latent-response formulation $y^{*}_{ij}=\eta_{ij}+\epsilon_{ij}$: a logistic distribution implies the logit link and fixes $\operatorname{Var}(\epsilon)=\pi^2/3\approx3.29$, whereas a standard normal distribution implies the probit link and fixes $\operatorname{Var}(\epsilon)=1$. Because the two models differ only by this scaling, their coefficients differ by roughly a factor of 1.6 while the fitted probabilities are nearly identical. To confirm that the substantive conclusions do not depend on this choice, the null model and the final model were re-estimated with a probit link and the resulting ICCs compared.
+
+```{r probit_comparison, results='markup'}
+
+# ============================================================
+# 22. LOGIT VS. PROBIT
+# ============================================================
+# Same models, different link. The ICC must be computed with
+# the link-specific Level-1 variance:
+#   logit  -> pi^2 / 3 ~ 3.29
+#   probit -> 1
+
+model_probit_null <- glmer(
+  leave ~ (1 | school_id),
+  data = data_logistic,
+  family = binomial(link = "probit"),
+  nAGQ = 1
+)
+
+model_probit <- glmer(
+  as.formula(
+    paste0(
+      "leave ~ ",
+      paste(retained_terms, collapse = " + "),
+      " + (1 | school_id)"
+    )
+  ),
+  data = data_logistic,
+  family = binomial(link = "probit"),
+  nAGQ = 1
+)
+
+summary(model_probit)
+
+# ---- ICCs under each link ------------------------------------
+var_u0_logit  <- as.data.frame(VarCorr(model_logistic_final))[1, 4]
+var_u0_probit <- as.data.frame(VarCorr(model_probit))[1, 4]
+
+icc_logit_final  <- var_u0_logit  / (var_u0_logit  + pi^2 / 3)
+icc_probit_final <- var_u0_probit / (var_u0_probit + 1)
+
+cat("ICC (logit link): ", round(100 * icc_logit_final, 2), "%\n", sep = "")
+cat("ICC (probit link):", " ", round(100 * icc_probit_final, 2), "%\n", sep = "")
+
+# ---- Coefficient scaling: logit / probit should be ~1.6 -------
+cat("\nLogit / probit coefficient ratios:\n")
+print(round(fixef(model_logistic_final) / fixef(model_probit), 3))
+
+# ---- Fitted probabilities should be nearly identical ---------
+plot(
+  fitted(model_probit),
+  fitted(model_logistic_final),
+  xlab = "Probit fitted probabilities",
+  ylab = "Logit fitted probabilities",
+  main = "Fitted probabilities: logit vs. probit"
+)
+abline(0, 1, col = "red")
+
+```
+
+**Results.** The two links agree, as expected. The conditional ICC is `r round(100 * icc_logit_final, 2)`% under the logit link and `r round(100 * icc_probit_final, 2)`% under the probit link -- a negligible difference, given that each is computed with its own link-specific Level-1 variance ($\pi^2/3$ and $1$ respectively). The ratios of logit to probit coefficients range from 1.70 to 1.87 across the five predictors, consistent with the theoretical scaling factor of roughly 1.6--1.9 (often cited as $\approx 1.7$), and the fitted probabilities from the two models lie almost exactly on the identity line. Significance patterns are identical under both links: stress and age are significant, while experience, ICT use and lack of respect are not. The substantive conclusions therefore do not depend on the choice of link function.
+
+### Conditional versus Marginal Interpretation
+
+A point emphasised in the lecture, and easy to state incorrectly, is that the fixed effects of a multilevel logistic model are **conditional** (cluster-specific) effects, not population-averaged ones. The coefficient for perceived stress, $b=0.942$ ($OR=2.566$), therefore describes the change in the log-odds of considering leaving for a one-standard-deviation increase in stress *within a given school*, holding that school's random intercept $u_{0j}$ constant. It compares two teachers in the same school, not two teachers drawn at random from the population.
+
+This distinction has no analogue in the linear mixed model of the main analysis, where conditional and marginal fixed effects coincide. It arises here because the link function is nonlinear: averaging a nonlinear function over the distribution of $u_{0j}$ is not the same as evaluating that function at the average of $u_{0j}$. The practical consequence is that the marginal (population-averaged) odds ratio is *smaller in magnitude* than the conditional one reported above -- the school-to-school heterogeneity captured by $\sigma^2_{u0}=`r round(school_variance, 4)`$ flattens the average curve relative to any individual school's curve. The odds ratios in this report should accordingly be read as within-school effects. Given the small conditional ICC (`r round(100 * icc_logistic_conditional, 2)`%), the gap between the conditional and marginal estimates is modest here, but the interpretation remains the conditional one.
+
+The plot below makes this concrete: it shows the predicted probability of considering leaving as a function of perceived stress for three schools -- one at $u_{0j}=+1\,SD$ (high baseline propensity), one at the average ($u_{0j}=0$), and one at $-1\,SD$ -- with all other predictors held at their means. Each school has its own logistic curve, shifted on the logit scale; the marginal curve is the average of all such curves, not any one of them.
+
+```{r conditional_curves, results='markup'}
+
+# ============================================================
+# 23. CONDITIONAL CURVES: THREE SCHOOLS AT u0 = 0, +/- 1 SD
+# ============================================================
+
+b_log  <- fixef(model_logistic_final)
+sd_u0  <- sqrt(as.data.frame(VarCorr(model_logistic_final))[1, 4])
+
+logistic_fun <- function(eta) exp(eta) / (1 + exp(eta))
+
+# All predictors at their mean (= 0, since standardized), so only
+# the intercept, the stress coefficient, and u0 remain.
+p_stress <- function(x, u0) {
+  logistic_fun(b_log[["(Intercept)"]] + b_log[["stress_z"]] * x + u0)
+}
+
+curve(
+  p_stress(x, u0 = sd_u0),
+  from = -2, to = 3, ylim = c(0, 1),
+  xlab = "Perceived stress (z)",
+  ylab = "P(considering leaving)",
+  main = "Conditional curves for three schools\n(other predictors at their means)"
+)
+curve(p_stress(x, u0 = 0),      from = -2, to = 3, add = TRUE, lty = 2)
+curve(p_stress(x, u0 = -sd_u0), from = -2, to = 3, add = TRUE, lty = 3)
+
+legend(
+  "topleft",
+  legend = c("u0 = +1 SD (high-risk school)",
+             "u0 =  0   (average school)",
+             "u0 = -1 SD (low-risk school)"),
+  lty = c(1, 2, 3), bty = "n"
+)
+
+```
+
+
+```{r residual_analysis_logistic, results='markup'}
+
+
+# Fitted probabilities
+
+yhat_logistic <- fitted(model_logistic)
+
+
+# Pearson residuals
+
+eps_pearson <- residuals(
+  model_logistic,
+  type = "pearson"
+)
+
+summary(eps_pearson)
+
+
+# Deviance residuals
+
+eps_deviance <- residuals(
+  model_logistic,
+  type = "deviance"
+)
+
+summary(eps_deviance)
+
+
+# Pearson residuals versus fitted probabilities
+
+plot(
+  yhat_logistic,
+  eps_pearson,
+  xlab = "Fitted probabilities",
+  ylab = "Pearson residuals",
+  main = "Pearson Residuals vs. Fitted Probabilities"
+)
+
+abline(h = 0)
+
+
+# Deviance residuals versus fitted probabilities
+
+plot(
+  yhat_logistic,
+  eps_deviance,
+  xlab = "Fitted probabilities",
+  ylab = "Deviance residuals",
+  main = "Deviance Residuals vs. Fitted Probabilities"
+)
+
+abline(h = 0)
+
+
+# Random effects
+
+u0_logistic <- ranef(
+  model_logistic
+)$school_id$`(Intercept)`
+
+
+# Normal Q-Q plot of school random effects
+
+qqnorm(
+  u0_logistic,
+  main = "Normal Q-Q Plot of School Random Intercepts"
+)
+
+qqline(u0_logistic)
+
+
+# Density of school random effects
+
+plot(
+  density(u0_logistic),
+  main = "Density of School Random Intercepts",
+  xlab = "Random intercept"
+)
+
+
+# Model diagnostics
+
+isSingular(model_logistic)
+
+model_logistic@optinfo$conv
+
+par(mfrow = c(2, 4))
+
+par(mfrow = c(2, 4))
+
+par(mfrow = c(2, 4))
+par(cex.main = 0.85)   
+# 1) School-level proportion considering leaving
+school_leave <- data_model_clean %>%
+  group_by(school_id) %>%
+  summarise(prop_leave = mean(leave, na.rm = TRUE))
+
+boxplot(school_leave$prop_leave,
+        main = "School-level leave proportion",
+        ylab = "Proportion leave = 1")
+
+stripchart(school_leave$prop_leave,
+           vertical = TRUE,
+           method = "jitter",
+           pch = 16,
+           add = TRUE)
+
+abline(h = mean(school_leave$prop_leave), lty = 2)
+
+# 2) Age
+scatter.smooth(data_model_clean$age_z,
+               jitter(data_model_clean$leave, amount = 0.05),
+               main = "Age and leaving",
+               xlab = "Age (z-score)",
+               ylab = "Leave (jittered)",
+               lpars = list(col = "red", lwd = 2))
+
+# 3) Experience
+scatter.smooth(data_model_clean$experience_z,
+               jitter(data_model_clean$leave, amount = 0.05),
+               main = "Experience and leaving",
+               xlab = "Experience (z-score)",
+               ylab = "Leave (jittered)",
+               lpars = list(col = "red", lwd = 2))
+
+# 4) Working hours
+scatter.smooth(data_model_clean$working_hours_z,
+               jitter(data_model_clean$leave, amount = 0.05),
+               main = "Working hours and leaving",
+               xlab = "Working hours (z-score)",
+               ylab = "Leave (jittered)",
+               lpars = list(col = "red", lwd = 2))
+
+# 5) ICT use
+ict_prop <- tapply(data_model_clean$leave, data_model_clean$ict_use, mean, na.rm = TRUE)
+barplot(ict_prop,
+        main = "Leaving by ICT use",
+        xlab = "ICT use",
+        ylab = "Proportion leave = 1")
+
+# 6) Stress
+stress_prop <- tapply(data_model_clean$leave, data_model_clean$stress, mean, na.rm = TRUE)
+barplot(stress_prop,
+        main = "Leaving by stress",
+        xlab = "Stress",
+        ylab = "Proportion leave = 1")
+
+# 7) Lack of respect
+respect_prop <- tapply(data_model_clean$leave, data_model_clean$lack_of_respect, mean, na.rm = TRUE)
+barplot(respect_prop,
+        main = "Leaving by lack of respect",
+        xlab = "Lack of respect",
+        ylab = "Proportion leave = 1")
+
+# 8) SES disadvantage
+scatter.smooth(data_model_clean$ses_disadvantage_z,
+               jitter(data_model_clean$leave, amount = 0.05),
+               main = "SES disadvantage and leaving",
+               xlab = "SES disadvantage (z-score)",
+               ylab = "Leave (jittered)",
+               lpars = list(col = "red", lwd = 2))
+
+par(mfrow = c(1,1))
+par(cex.main = 1)   
+
+```
+
+#### Interpretation of the Diagnostics (Binary Outcome)
+
+Residual diagnostics for the multilevel logistic regression were conducted differently from those for the continuous outcome, because the dependent variable is binary and follows a Bernoulli distribution. Consequently, the normality and constant-variance assumptions used for Level-1 residuals in the linear mixed-effects model do not apply in the same way to the logistic model.
+
+Pearson and deviance residuals were examined in relation to the fitted probabilities to identify systematic patterns and observations with unusually large residual values. The Pearson residuals had a mean close to zero (−0.002) and a median of approximately −0.34, but ranged up to a maximum of 5.39. This indicates that while most observations were well predicted, a small number were poorly predicted by the model — and, consistent with the residuals-versus-fitted-probabilities plot, the largest positive residuals occur among observations with low fitted probabilities (i.e., cases the model predicted were very unlikely to leave, but which did). The deviance residuals ranged from −1.55 to 2.61, a noticeably narrower and less extreme range at the upper end than the Pearson residuals, indicating that the deviance-based measure is less sensitive to the handful of poorly predicted low-probability cases.
+
+The residual-versus-fitted-probability plots show the characteristic two-curve pattern expected for a binary outcome, with one curve corresponding to observed 0s and the other to observed 1s. This pattern is a structural feature of residuals from a binary model and should not be interpreted as evidence of a violation of the constant-variance assumption used in linear mixed-effects models. Instead, these plots are read for systematic asymmetries or unusually extreme residual values under the fitted Bernoulli-logit model, which is where the handful of large Pearson residuals noted above were identified.
+
+The school-specific random intercepts were also examined using a normal Q-Q plot, since the random effects are assumed to follow a normal distribution on the latent logit scale. The central part of the Q-Q plot follows the reference line reasonably well, but there are noticeable deviations in the tails, particularly in the upper tail, where one school shows a markedly larger random intercept than the reference line would predict. This pattern is consistent with some right-skewness in the distribution of school-level intercepts. The normality assumption for the school-specific random effects therefore appears only approximately satisfied rather than exact.
+
+The model itself showed no computational problems: it was not singular (`isSingular(model_logistic)` returned `FALSE`), and the optimizer's convergence code was 0, both indicating successful convergence and a well-identified random-effects structure.
+
+Overall, the diagnostics do not indicate a computational problem with the multilevel logistic regression. There are some relatively large Pearson residuals concentrated among low-fitted-probability cases, and some right-tail deviation from normality in the school-specific random intercepts. These should be acknowledged as limitations of the fitted model, but on their own they do not provide sufficient grounds to reject the random-intercept logistic specification.
+
+Exploratory Analysis (Logistic Extension: Intention to Leave)
+
+To examine the raw, unadjusted relationships between each predictor and teachers' intention to leave, the same set of exploratory plots used for the main analysis was reproduced for the binary outcome. Because the outcome is binary rather than continuous, the school-level panel shows the proportion of teachers considering leaving (rather than a mean), continuous predictors are shown as jittered scatterplots with a loess-smoothed trend line, and the ordinal predictors are shown as proportion bar charts rather than boxplots.
+
+The school-level panel shows that most schools have a leave proportion between roughly 0.10 and 0.40, with the median around 0.20, but a small number of schools show markedly higher proportions — one approaching nearly all teachers considering leaving. This pattern of modest but non-trivial between-school spread is broadly consistent with the unconditional ICC of `r round(100 * icc_logistic_unconditional, 2)`% obtained from the null model: schools account for a real, if limited, share of the variation in turnover intention.
+
+The marginal relationships between age, experience, working hours, and intention to leave all appear visually weak: the loess-smoothed trend line stays close to the bottom of the plot across the full range of each predictor, with no clear rise toward the upper cluster of points. For experience, this is consistent with its non-significant effect in the adjusted model; working hours was removed during model selection and does not appear in the fitted model at all. For age, however, the flat marginal trend appears to be in tension with the model's finding of a significant positive effect (OR = 1.476); this is not a contradiction — because these are raw, unadjusted bivariate plots that do not control for the other predictors (particularly stress, by far the dominant predictor), a weak marginal pattern can coexist with a significant adjusted effect once the other predictors are held constant.
+
+The proportion bar charts show clearer and more informative patterns. Stress shows a strong, monotonic increase in the proportion of teachers considering leaving, from about 7% in the lowest stress category to roughly 50% in the highest, mirroring its status as by far the strongest predictor in the fitted model (OR = 2.566). ICT use shows a modest decrease from category 1 to the remaining categories, weakly consistent with its borderline negative association in the adjusted model (p = .067). Lack of respect shows little variation across categories (all between approximately 20% and 23%), consistent with its non-significant effect on intention to leave. The marginal relationship between SES disadvantage and leaving is similarly flat, consistent with that predictor having been removed during model selection.
+
+As with the exploratory plots for the main analysis, these patterns should be interpreted as descriptive rather than confirmatory: they reflect raw, unadjusted associations that do not account for the other predictors or the multilevel structure of the data, and should not be used in place of the fitted model's coefficients to draw conclusions about individual predictors.
+
