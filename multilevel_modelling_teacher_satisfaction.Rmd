@@ -8,20 +8,12 @@ output:
 ---
 
 
-The original one
-
-# Session 1: Exposure to Datasets
-
 ```{r,results='markup'}
 library(haven)
 library(dplyr)
 library(lme4)
 library(lmerTest)
 
-# NOTE: update this path to the local location of the PISA 2022 .rdata files
-# before knitting. Using a hardcoded absolute path keeps this script from
-# being reproducible on another machine; consider using a relative path
-# (e.g. via an RStudio project + here::here()) for the final submission.
 folder <- "/Users/minayildirim/Library/Mobile Documents/com~apple~CloudDocs/Tubingen/lessons/2nd semester/Multilevel Modelling"
 
 tch_path <- file.path(folder, "CY08MSP_TCH_QQQ.rdata")
@@ -76,8 +68,6 @@ tch %>%
 
 The number of teachers per school ranged from 1 to 25, with an average of 14.41 teachers per school (Median = 15.5). This indicates a hierarchical data structure where teachers are nested within schools.
 
-
-# Session 2–5: Formulation of Research Questions, Selection of Variables, and Literature Research
 
 In this study, a two-level hierarchical structure is employed, in which teachers (Level 1) are nested within schools (Level 2). A subset of variables from the PISA 2022 Teacher and School Questionnaires is selected to investigate how individual teacher characteristics and school-level factors are associated with teacher outcomes. The analysis sample is restricted to teachers with valid observations on the variables included in the respective models.
 
